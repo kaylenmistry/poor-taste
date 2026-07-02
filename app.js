@@ -245,7 +245,7 @@
     [
       "svgLayer", "avatarLayer", "bracketWrap", "statLine", "chips", "wineToggle", "wineToggleLabel",
       "wineToggleIcon", "winePanel", "manageBlock", "lockedNote", "lockBtn", "lockIconOpen", "lockIconClosed",
-      "tVal", "tMinus", "tPlus", "picksToggle", "anonToggle", "modal", "backdrop", "modalName", "modalBy", "modalDesc",
+      "tVal", "tMinus", "tPlus", "picksToggle", "anonToggle", "anonInfoBtn", "anonTooltip", "modal", "backdrop", "modalName", "modalBy", "modalDesc",
       "modalPhotoBtn", "modalImgInput", "modalStatus", "modalVoteSection", "modalRemove", "modalClose",
       "wname", "wby", "wdesc", "wimg", "photoBtn", "addBtn", "menuBtn", "menuPanel", "exportBtn",
       "importBtn", "importInput", "resetBtn"
@@ -261,6 +261,8 @@
     renderChips();
     renderBracket();
     renderLockUI();
+    els.picksToggle.setAttribute("aria-pressed", String(state.showPicks));
+    els.anonToggle.setAttribute("aria-pressed", String(state.anonymous));
   }
 
   function renderChips() {
@@ -351,7 +353,7 @@
           if (tiedHere) border = "3px solid var(--danger)";
           else border = vHere.yourVote ? "3px solid var(--accent)" : "2px solid var(--border)";
         }
-        if (k >= 1 && !isChamp) crown = '<span class="avatar-crown" title="Won this match">&#128081;</span>';
+        if (k < st.roundsWon) crown = '<span class="avatar-crown" title="Won this match">&#128081;</span>';
         if (votable) {
           var vBadge = getVote(pinnedRound, pinnedIdx, pinnedSide);
           if (vBadge.count > 0) {
@@ -623,6 +625,19 @@
       renderBracket();
     });
 
+    els.anonInfoBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var open = els.anonTooltip.hidden;
+      els.anonTooltip.hidden = !open;
+      els.anonInfoBtn.setAttribute("aria-expanded", String(open));
+    });
+    document.addEventListener("click", function (e) {
+      if (!els.anonTooltip.hidden && !els.anonTooltip.contains(e.target) && e.target !== els.anonInfoBtn) {
+        els.anonTooltip.hidden = true;
+        els.anonInfoBtn.setAttribute("aria-expanded", "false");
+      }
+    });
+
     els.anonToggle.addEventListener("click", function () {
       if (!state.anonymous) {
         var before = buildData();
@@ -635,7 +650,6 @@
         }
       }
       state.anonymous = !state.anonymous;
-      els.anonToggle.setAttribute("aria-pressed", String(state.anonymous));
       saveState();
       renderAll();
       if (modalPin) renderModalComputed();

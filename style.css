@@ -249,9 +249,46 @@ button, input, textarea {
 .bracket-toolbar {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
   margin-bottom: 6px;
 }
+.toggle-with-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+}
+.info-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 0.5px solid var(--border);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.tooltip-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 220px;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 12px;
+  line-height: 1.45;
+  border-radius: 10px;
+  padding: 10px 12px;
+  z-index: 25;
+}
+.tooltip-pop strong { font-weight: 600; }
 .chip-btn {
   display: flex;
   align-items: center;
@@ -392,17 +429,18 @@ button, input, textarea {
 .vote-btn {
   width: 100%; border-radius: 8px; padding: 10px; font-weight: 600; font-size: 14px;
   border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;
+  margin-bottom: 10px;
 }
 .vote-btn.cast { background: var(--accent); color: var(--accent-ink); }
 .vote-btn.remove { background: var(--bg); color: var(--ink); border: 0.5px solid var(--border); }
-.vote-locked-hint { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.vote-locked-hint { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; margin-bottom: 10px; }
 
 .tie-panel {
   border: 0.5px solid var(--danger); background: var(--danger-bg); border-radius: 10px;
   padding: 10px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px;
 }
-.tie-panel .vote-locked-hint { color: var(--danger); font-weight: 600; }
-.tie-panel .vote-btn { font-size: 13px; padding: 8px; }
+.tie-panel .vote-locked-hint { color: var(--danger); font-weight: 600; margin-bottom: 0; }
+.tie-panel .vote-btn { font-size: 13px; padding: 8px; margin-bottom: 0; }
 
 .others-row {
   display: flex; align-items: center; justify-content: space-between;
