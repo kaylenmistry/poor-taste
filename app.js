@@ -80,6 +80,11 @@
     return '<div class="avatar-initials">' + esc(initials(c.name)) + "</div>";
   }
 
+  function withTransition(fn) {
+    if (document.startViewTransition) document.startViewTransition(fn);
+    else fn();
+  }
+
   function compressImage(file, maxSize, quality) {
     maxSize = maxSize || 220;
     quality = quality || 0.72;
@@ -271,12 +276,10 @@
   var hostConn = null; // guest side
   var reconnectTimer = null;
 
-  function shortId() {
-    var chars = "abcdefghijkmnpqrstuvwxyz23456789";
-    var s = "";
-    for (var i = 0; i < 7; i++) s += chars[Math.floor(Math.random() * chars.length)];
-    return s;
+  function shortCode() {
+    return String(Math.floor(1000 + Math.random() * 9000));
   }
+  function peerIdFromCode(code) { return "pt" + code; }
 
   function publicState() {
     return {
@@ -343,13 +346,15 @@
   function startSession() {
     if (typeof Peer === "undefined") { alert("Couldn't load the networking library. Check your connection and try again."); return; }
     if (!state.voters[myVoterId]) state.voters[myVoterId] = "Host";
-    peer = new Peer(shortId());
-    peer.on("open", function (id) {
-      var url = location.origin + location.pathname + "?join=" + id;
+    var code = shortCode();
+    peer = new Peer(peerIdFromCode(code));
+    peer.on("open", function () {
+      var url = location.origin + location.pathname + "?join=" + code;
       els.startSessionBtn.hidden = true;
       els.sessionActive.hidden = false;
       els.qrCode.innerHTML = "";
       new QRCode(els.qrCode, { text: url, width: 120, height: 120, colorDark: "#f5efe4", colorLight: "#2b2420", correctLevel: QRCode.CorrectLevel.M });
+      els.joinCode.textContent = code;
       els.copyLinkBtn.dataset.url = url;
       updateConnectedUI();
     });
@@ -416,7 +421,7 @@
   function connectToHost(hostId, name) {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     setConnectionStatus("", "Connecting…");
-    hostConn = peer.connect(hostId, { reliable: true });
+    hostConn = peer.connect(peerIdFromCode(hostId), { reliable: true });
     hostConn.on("open", function () {
       hostConn.send({ type: "hello", voterId: myVoterId, name: name });
       setConnectionStatus("on", "Connected as " + name);
@@ -458,11 +463,13 @@
       "svgLayer", "avatarLayer", "bracketWrap", "statLine", "chips", "wineToggle", "wineToggleLabel",
       "wineToggleIcon", "winePanel", "manageBlock", "lockedNote", "lockBtn", "lockIconOpen", "lockIconClosed",
       "tVal", "tMinus", "tPlus", "anonToggle", "anonInfoBtn", "anonTooltip", "modal", "backdrop",
-      "modalTitle", "modalBody", "modalClose",
+      "modalTitle", "modalBody", "modalClose", "modalBack",
       "wname", "wby", "wdesc", "wimg", "photoBtn", "addBtn", "menuBtn", "menuPanel", "exportBtn",
       "importBtn", "importInput", "resetBtn", "sessionBlock", "startSessionBtn", "sessionActive", "qrCode",
       "copyLinkBtn", "connectedCount", "stopSessionBtn", "connectionPill", "connectionDot", "connectionText",
-      "joinScreen", "mainApp", "joinName", "joinBtn", "joinStatus", "joinIntro", "focusToggle", "focusPanel", "voterRow"
+      "joinScreen", "mainApp", "joinName", "joinBtn", "joinStatus", "joinIntro", "focusToggle", "focusPanel", "voterRow",
+      "sessionDetailsToggle", "sessionDetails", "joinCode", "joinByCodeRow", "joinByCodeBtn", "joinByCodeForm",
+      "joinCodeInput", "joinByCodeSubmit"
     ].forEach(function (id) { els[id] = document.getElementById(id); });
   }
 
@@ -471,6 +478,7 @@
   var modalKind = null; // "edit" | "h2h" | null
   var modalCompId = null;
   var modalMatch = null; // {round, idx}
+  var modalReturnTo = null; // {round, idx} to go back to from an edit-modal opened via "view details"
 
   function renderAll() {
     renderChips();
@@ -604,13 +612,6 @@
         var compId = Number(this.getAttribute("data-comp"));
         if (state.locked) {
           openHeadToHeadModal(round, idx);
-          if (!isGuest) {
-            state.focusedMatch = { round: round, idx: idx };
-            saveState();
-            showFocusPanel = true;
-            renderFocusPanel();
-            broadcastState();
-          }
         } else {
           openEditModal(compId);
         }
@@ -681,8 +682,9 @@
       var winnerBadge = (m.winner && m.winner !== "BYE" && m.winner.id === comp.id) ? '<div class="h2h-winner">Winner</div>' : "";
       return '<div class="h2h-side">' +
         '<div class="h2h-avatar">' + avatarInnerHTML(comp) + "</div>" +
-        '<div class="h2h-name">' + esc(comp.name) + "</div>" +
-        (comp.by ? '<div class="h2h-by">' + esc(comp.by) + "</div>" : "") +
+        '<div class="h2h-name-row"><span class="h2h-name">' + esc(comp.name) + '</span>' +
+        '<button class="info-btn h2h-info-btn" data-action="view-details" data-comp-id="' + comp.id + '" aria-label="View ' + esc(comp.name) + ' details">i</button></div>' +
+        '<div class="h2h-by">' + (comp.by ? esc(comp.by) : "&nbsp;") + "</div>" +
         body + winnerBadge +
         "</div>";
     }
@@ -690,6 +692,13 @@
     var html = '<div class="h2h">' + sideHTML("a") + '<div class="h2h-vs">vs</div>' + sideHTML("b") + "</div>";
 
     var bothReal = m.a && m.b && m.a !== "BYE" && m.b !== "BYE";
+    if (bothReal && !isGuest && state.locked) {
+      var isFocused = state.focusedMatch && state.focusedMatch.round === round && state.focusedMatch.idx === idx;
+      html += isFocused
+        ? '<div class="focus-control"><span class="focus-active-badge">&#9733; Current head-to-head</span><button class="text-link-btn" data-action="clear-focus">Clear</button></div>'
+        : '<button class="vote-btn remove set-focus-btn" data-action="set-focus">Set as current head-to-head</button>';
+    }
+
     if (bothReal) {
       if (!state.locked) {
         html += '<div class="vote-locked-hint" style="justify-content:center;margin-top:10px;">Lock the configuration to start voting</div>';
@@ -764,6 +773,33 @@
     act('[data-action="revote"]', function () { if (!isGuest) doAction("revote", round, idx, null); });
     act('[data-action="declare-a"]', function () { if (!isGuest) doAction("declare-a", round, idx, null); });
     act('[data-action="declare-b"]', function () { if (!isGuest) doAction("declare-b", round, idx, null); });
+
+    var setFocusBtn = container.querySelector('[data-action="set-focus"]');
+    if (setFocusBtn) setFocusBtn.addEventListener("click", function () {
+      if (isGuest) return;
+      state.focusedMatch = { round: round, idx: idx };
+      saveState();
+      showFocusPanel = true;
+      renderAll();
+      refreshOpenCards();
+      broadcastState();
+    });
+    var clearFocusBtn = container.querySelector('[data-action="clear-focus"]');
+    if (clearFocusBtn) clearFocusBtn.addEventListener("click", function () {
+      if (isGuest) return;
+      state.focusedMatch = null;
+      saveState();
+      renderAll();
+      refreshOpenCards();
+      broadcastState();
+    });
+    Array.prototype.forEach.call(container.querySelectorAll('[data-action="view-details"]'), function (el) {
+      el.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var compId = Number(this.getAttribute("data-comp-id"));
+        withTransition(function () { openEditModal(compId, { round: round, idx: idx }); });
+      });
+    });
   }
 
   function renderFocusPanel() {
@@ -848,12 +884,14 @@
 
   // ---------- modal ----------
 
-  function openEditModal(compId) {
+  function openEditModal(compId, returnTo) {
     var c = state.competitors.find(function (x) { return x.id === compId; });
     if (!c) return;
     modalKind = "edit";
     modalCompId = compId;
     modalMatch = null;
+    modalReturnTo = returnTo || null;
+    els.modalBack.hidden = !modalReturnTo;
     els.modalTitle.textContent = "Wine details";
     els.modalBody.innerHTML = editCardHTML(c);
     wireEditCard(els.modalBody, compId);
@@ -865,6 +903,8 @@
     modalKind = "h2h";
     modalMatch = { round: round, idx: idx };
     modalCompId = null;
+    modalReturnTo = null;
+    els.modalBack.hidden = true;
     els.modalTitle.textContent = "Head to head";
     els.modalBody.innerHTML = headToHeadHTML(round, idx);
     wireHeadToHead(els.modalBody, round, idx);
@@ -878,6 +918,7 @@
     modalKind = null;
     modalCompId = null;
     modalMatch = null;
+    modalReturnTo = null;
   }
 
   // ---------- events ----------
@@ -885,6 +926,11 @@
   function wireEvents() {
     els.modalClose.addEventListener("click", closeModal);
     els.backdrop.addEventListener("click", closeModal);
+    els.modalBack.addEventListener("click", function () {
+      if (!modalReturnTo) return;
+      var target = modalReturnTo;
+      withTransition(function () { openHeadToHeadModal(target.round, target.idx); });
+    });
 
     els.wineToggle.addEventListener("click", function () {
       if (state.locked) return;
@@ -974,6 +1020,7 @@
 
     els.lockBtn.addEventListener("click", function () {
       if (state.locked) {
+        if (!confirm("Unlock configuration? This will reset all votes and end any active voting session.")) return;
         state.locked = false;
         state.votes = {};
         state.focusedMatch = null;
@@ -1049,6 +1096,25 @@
         els.copyLinkBtn.textContent = "Copied!";
         setTimeout(function () { els.copyLinkBtn.textContent = "Copy link instead"; }, 1500);
       });
+    });
+    els.sessionDetailsToggle.addEventListener("click", function () {
+      var open = els.sessionDetails.hidden;
+      els.sessionDetails.hidden = !open;
+      els.sessionDetailsToggle.setAttribute("aria-expanded", String(open));
+    });
+
+    els.joinByCodeBtn.addEventListener("click", function () {
+      var open = els.joinByCodeForm.hidden;
+      els.joinByCodeForm.hidden = !open;
+      if (open) els.joinCodeInput.focus();
+    });
+    els.joinByCodeSubmit.addEventListener("click", function () {
+      var code = els.joinCodeInput.value.trim();
+      if (!code) return;
+      location.href = location.pathname + "?join=" + encodeURIComponent(code);
+    });
+    els.joinCodeInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") els.joinByCodeSubmit.click();
     });
 
     els.joinBtn.addEventListener("click", function () {

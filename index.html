@@ -47,6 +47,14 @@
       </div>
     </header>
 
+    <div id="joinByCodeRow" class="join-by-code-row host-only">
+      <button id="joinByCodeBtn" class="text-link-btn" type="button">Have a code? Join a tasting</button>
+      <div id="joinByCodeForm" class="join-by-code-form" hidden>
+        <input id="joinCodeInput" type="text" inputmode="numeric" maxlength="4" placeholder="Code" />
+        <button id="joinByCodeSubmit" class="primary-btn" type="button">Join</button>
+      </div>
+    </div>
+
     <div id="menuPanel" class="menu-panel host-only" hidden>
       <button id="exportBtn" class="menu-item">Export backup (JSON)</button>
       <button id="importBtn" class="menu-item">Import backup</button>
@@ -98,19 +106,27 @@
     </div>
 
     <div id="sessionBlock" class="session-block host-only" hidden>
+      <p class="session-explainer">Wines are locked. Tally votes yourself with the &minus; / + controls, or let everyone vote from their own phone below.</p>
       <button id="startSessionBtn" class="pill-toggle" type="button">
-        <span>Start voting session</span>
+        <span>Let others vote from their phones</span>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V5a4 4 0 0 1 8 0v2"/></svg>
       </button>
       <div id="sessionActive" class="session-active" hidden>
-        <div class="session-row">
-          <div id="qrCode" class="qr-code"></div>
-          <div class="session-info">
-            <p class="session-hint">Scan to vote from your phone</p>
-            <button id="copyLinkBtn" class="text-link-btn" type="button">Copy link instead</button>
-            <p id="connectedCount" class="connected-count">0 connected</p>
+        <button id="sessionDetailsToggle" class="pill-toggle" aria-expanded="true" type="button">
+          <span>How to join</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div id="sessionDetails" class="session-details">
+          <div class="session-row">
+            <div id="qrCode" class="qr-code"></div>
+            <div class="session-info">
+              <p class="session-hint">Scan, or enter this code:</p>
+              <div id="joinCode" class="join-code"></div>
+              <button id="copyLinkBtn" class="text-link-btn" type="button">Copy link instead</button>
+            </div>
           </div>
         </div>
+        <p id="connectedCount" class="connected-count">0 connected</p>
         <button id="stopSessionBtn" class="text-danger-btn" type="button">End session</button>
       </div>
     </div>
@@ -145,6 +161,9 @@
   <div id="modal" class="modal" hidden>
     <div class="modal-handle"></div>
     <div class="modal-head">
+      <button id="modalBack" class="icon-btn small" aria-label="Back" hidden>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
       <span class="modal-title" id="modalTitle">Wine details</span>
       <button id="modalClose" class="icon-btn" aria-label="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>

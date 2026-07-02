@@ -446,9 +446,9 @@ button, input, textarea {
   background: var(--border-strong); margin: 0 auto 10px;
 }
 .modal-head {
-  display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
 }
-.modal-title { font-size: 13px; font-weight: 600; color: var(--muted); }
+.modal-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
 .modal-photo-row { display: flex; gap: 10px; }
 .modal-photo-btn {
   width: 60px; height: 60px; flex-shrink: 0; padding: 0;
@@ -460,9 +460,9 @@ button, input, textarea {
 .modal-fields input {
   width: 100%; border: 0.5px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg);
 }
-#modalDesc {
-  width: 100%; min-height: 54px; margin-top: 8px; border: 0.5px solid var(--border);
-  border-radius: 8px; padding: 8px 10px; background: var(--bg); resize: vertical;
+#modalBody textarea {
+  width: 100%; min-height: 54px; margin-top: 10px; border: 0.5px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; background: var(--bg); color: var(--ink); resize: vertical;
 }
 .modal-status { margin-top: 10px; font-size: 13px; color: var(--muted); }
 .modal-vote { margin-top: 8px; }
@@ -481,7 +481,7 @@ button, input, textarea {
 
 .tie-panel {
   border: 0.5px solid var(--danger); background: var(--danger-bg); border-radius: 10px;
-  padding: 10px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px;
+  padding: 14px; margin: 16px 0; display: flex; flex-direction: column; gap: 10px;
 }
 .tie-panel .vote-locked-hint { color: var(--danger); font-weight: 600; margin-bottom: 0; }
 .tie-panel .vote-btn { font-size: 13px; padding: 8px; margin-bottom: 0; }
@@ -554,13 +554,15 @@ body.guest-mode .host-only { display: none !important; }
 
 .h2h { display: flex; align-items: flex-start; gap: 8px; }
 .h2h-side { flex: 1; min-width: 0; text-align: center; }
+.h2h-name-row { display: flex; align-items: center; justify-content: center; gap: 4px; margin-bottom: 2px; }
 .h2h-avatar {
   width: 64px; height: 64px; border-radius: 50%; margin: 0 auto 8px;
   overflow: hidden; background: var(--bg); box-sizing: border-box;
 }
 .h2h-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.h2h-name { font-size: 14px; font-weight: 600; margin-bottom: 2px; overflow-wrap: break-word; }
-.h2h-by { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+.h2h-name { font-size: 14px; font-weight: 600; overflow-wrap: break-word; }
+.h2h-info-btn { width: 18px; height: 18px; font-size: 10px; flex-shrink: 0; }
+.h2h-by { font-size: 11px; color: var(--muted); margin-bottom: 10px; min-height: 14px; }
 .h2h-vs {
   flex-shrink: 0; font-size: 11px; color: var(--muted); font-weight: 600;
   padding-top: 26px; width: 24px;
@@ -569,6 +571,15 @@ body.guest-mode .host-only { display: none !important; }
 .h2h-count { font-size: 11px; color: var(--muted); margin-top: 6px; }
 .h2h-status { text-align: center; font-size: 13px; margin: 12px 0 8px; color: var(--muted); }
 .h2h-winner { color: var(--gold); font-weight: 600; }
+
+.focus-control {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin: 14px 0; padding: 8px 10px; border-radius: 999px;
+  background: var(--accent-bg); font-size: 12px;
+}
+.focus-active-badge { color: var(--accent); font-weight: 600; }
+.focus-control .text-link-btn { font-size: 12px; }
+.set-focus-btn { margin: 14px 0 0; }
 
 .voter-row {
   display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;
@@ -581,17 +592,32 @@ body.guest-mode .host-only { display: none !important; }
 .voter-pill[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); font-weight: 600; }
 
 .session-block { margin-bottom: 10px; }
+.session-explainer { font-size: 12px; color: var(--muted); margin: 0 0 8px; line-height: 1.5; }
 .session-active {
-  background: var(--card); border: 0.5px solid var(--border); border-radius: 12px; padding: 14px;
+  background: var(--card); border: 0.5px solid var(--border); border-radius: 12px; padding: 10px;
 }
+.session-active .pill-toggle { background: none; border: none; padding: 4px 4px 8px; margin-bottom: 0; }
+.session-details { padding: 10px 4px; }
 .session-row { display: flex; gap: 14px; align-items: center; }
 .qr-code { flex-shrink: 0; line-height: 0; border-radius: 8px; overflow: hidden; }
 .qr-code img, .qr-code canvas { display: block; width: 120px; height: 120px; }
 .session-info { flex: 1; min-width: 0; }
 .session-hint { font-size: 13px; margin: 0 0 6px; color: var(--muted); }
+.join-code {
+  font-size: 26px; font-weight: 700; letter-spacing: 0.08em; font-variant-numeric: tabular-nums;
+  margin-bottom: 8px;
+}
 .text-link-btn {
   background: none; border: none; color: var(--accent); font-size: 13px; font-weight: 600;
   padding: 0; cursor: pointer; text-align: left;
 }
-.connected-count { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
-.session-active .text-danger-btn { margin-top: 12px; padding: 8px; border-top: 0.5px solid var(--border); border-radius: 0; }
+.connected-count { font-size: 12px; color: var(--muted); margin: 8px 0 0; padding: 0 4px; }
+.session-active .text-danger-btn { margin-top: 4px; padding: 8px; border-top: 0.5px solid var(--border); border-radius: 0; }
+
+.join-by-code-row { margin-bottom: 10px; }
+.join-by-code-form { display: flex; gap: 8px; margin-top: 8px; }
+.join-by-code-form input {
+  flex: 1; min-width: 0; border: 0.5px solid var(--border); border-radius: 8px;
+  padding: 9px 10px; background: var(--card); text-align: center; font-size: 15px; letter-spacing: 0.08em;
+}
+.join-by-code-form .primary-btn { width: auto; padding: 0 16px; }
