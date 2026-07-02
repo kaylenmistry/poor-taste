@@ -531,6 +531,7 @@ body.guest-mode .host-only { display: none !important; }
 }
 .join-card .brand-icon { font-size: 40px; display: block; margin-bottom: 10px; }
 .join-card h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+.brand-tagline { color: var(--accent); font-size: 13px; font-style: italic; margin: 0 0 18px; }
 .join-intro { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
 .join-card input {
   width: 100%; border: 0.5px solid var(--border); border-radius: 8px;
