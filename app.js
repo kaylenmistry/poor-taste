@@ -4,6 +4,7 @@
   var STORAGE_KEY = "poor-taste-state-v1";
   var VOTER_KEY = "poor-taste-voter-id";
   var GUEST_NAME_KEY = "poor-taste-guest-name";
+  var SESSION_CODE_KEY = "poor-taste-session-code";
   var CX = 500, CY = 500, OUTER = 430;
   var LEVEL_PCT = [9.5, 8, 7, 6.5, 6];
 
@@ -158,6 +159,16 @@
     delete state.revealed[matchKey(r, i)];
     delete state.overrides[matchKey(r, i)];
   }
+  // Wipes all match-level state. Needed whenever the bracket shape changes
+  // (wines added/removed/reordered) — otherwise stale votes/reveals/overrides
+  // from the old bracket get reused for unrelated matchups at the same
+  // round/index (e.g. an old override silently declaring seed 1 the winner).
+  function resetBracketState() {
+    state.votes = {};
+    state.revealed = {};
+    state.overrides = {};
+    state.focusedMatch = null;
+  }
 
   // ---------- bracket math ----------
 
@@ -223,6 +234,34 @@
         resolve(r2, k2);
       }
     }
+
+    // Third-place playoff: the two semifinal losers face off, tracked under
+    // the synthetic "T"/0 match key so it can reuse the normal vote/reveal/
+    // override machinery without touching the circular bracket's rounds[].
+    var thirdPlace = null;
+    var runnerUp = null;
+    function loserOf(m) {
+      if (!m.winner || m.winner === "BYE") return null;
+      if (!m.a || !m.b || m.a === "BYE" || m.b === "BYE") return null;
+      return m.winner.id === m.a.id ? m.b : m.a;
+    }
+    if (R >= 2) {
+      var semiA = rounds[R - 2][0], semiB = rounds[R - 2][1];
+      thirdPlace = { a: loserOf(semiA), b: loserOf(semiB), winner: null };
+      if (thirdPlace.a && thirdPlace.b) {
+        var tOverride = state.overrides[matchKey("T", 0)];
+        if (tOverride === "a") thirdPlace.winner = thirdPlace.a;
+        else if (tOverride === "b") thirdPlace.winner = thirdPlace.b;
+        else if (isRevealed("T", 0)) {
+          var vaT = getVote("T", 0, "a").count, vbT = getVote("T", 0, "b").count;
+          if (vaT >= needed) thirdPlace.winner = thirdPlace.a;
+          else if (vbT >= needed) thirdPlace.winner = thirdPlace.b;
+        }
+      }
+    }
+    var finalMatch = rounds[R - 1][0];
+    runnerUp = loserOf(finalMatch);
+
     var slotIndex = {};
     slots.forEach(function (s, i) { if (s && s !== "BYE") slotIndex[s.id] = i; });
     function leafAngle(i) {
@@ -236,7 +275,7 @@
     }
     var ECHO_R = [];
     for (var k3 = 0; k3 <= R; k3++) ECHO_R.push(OUTER * (R - k3) / R);
-    return { size: size, R: R, rounds: rounds, needed: needed, slots: slots, slotIndex: slotIndex, leafAngle: leafAngle, matchAngle: matchAngle, ECHO_R: ECHO_R };
+    return { size: size, R: R, rounds: rounds, needed: needed, slots: slots, slotIndex: slotIndex, leafAngle: leafAngle, matchAngle: matchAngle, ECHO_R: ECHO_R, thirdPlace: thirdPlace, runnerUp: runnerUp };
   }
 
   function pt(radius, angDeg) {
@@ -280,6 +319,17 @@
     return String(Math.floor(1000 + Math.random() * 9000));
   }
   function peerIdFromCode(code) { return "pt" + code; }
+
+  // Reuse the same join code across host page refreshes so any link/QR
+  // already shared stays valid — otherwise every refresh strands voters.
+  function getOrCreateSessionCode() {
+    var code = localStorage.getItem(SESSION_CODE_KEY);
+    if (!code) {
+      code = shortCode();
+      localStorage.setItem(SESSION_CODE_KEY, code);
+    }
+    return code;
+  }
 
   function publicState() {
     return {
@@ -343,10 +393,13 @@
     broadcastState();
   }
 
-  function startSession() {
-    if (typeof Peer === "undefined") { alert("Couldn't load the networking library. Check your connection and try again."); return; }
+  function startSession(silent) {
+    if (typeof Peer === "undefined") {
+      if (!silent) alert("Couldn't load the networking library. Check your connection and try again.");
+      return;
+    }
     if (!state.voters[myVoterId]) state.voters[myVoterId] = "Host";
-    var code = shortCode();
+    var code = getOrCreateSessionCode();
     peer = new Peer(peerIdFromCode(code));
     peer.on("open", function () {
       var url = location.origin + location.pathname + "?join=" + code;
@@ -369,7 +422,13 @@
       peer = null;
       els.startSessionBtn.hidden = false;
       els.sessionActive.hidden = true;
-      alert("Couldn't start the session (" + (err && err.type || "connection error") + "). Try again.");
+      if (err && err.type === "unavailable-id") {
+        // Stale id from a previous tab/tab-close — mint a fresh code and retry once.
+        localStorage.removeItem(SESSION_CODE_KEY);
+        startSession(silent);
+        return;
+      }
+      if (!silent) alert("Couldn't start the session (" + (err && err.type || "connection error") + "). Try again.");
     });
   }
 
@@ -395,6 +454,7 @@
     guestConns = {};
     if (peer) peer.destroy();
     peer = null;
+    localStorage.removeItem(SESSION_CODE_KEY);
     els.startSessionBtn.hidden = false;
     els.sessionActive.hidden = true;
   }
@@ -403,6 +463,11 @@
     els.connectionPill.hidden = false;
     els.connectionDot.className = "connection-dot " + mode;
     els.connectionText.textContent = text;
+    els.connectionHomeBtn.hidden = !(isGuest && mode === "off");
+    if (isGuest && joinId) {
+      els.roomBadge.hidden = false;
+      els.roomBadge.textContent = "Room " + joinId;
+    }
   }
 
   function joinSession(hostId, name) {
@@ -467,9 +532,10 @@
       "wname", "wby", "wdesc", "wimg", "photoBtn", "addBtn", "menuBtn", "menuPanel", "exportBtn",
       "importBtn", "importInput", "resetBtn", "sessionBlock", "startSessionBtn", "sessionActive", "qrCode",
       "copyLinkBtn", "connectedCount", "stopSessionBtn", "connectionPill", "connectionDot", "connectionText",
+      "roomBadge", "connectionHomeBtn", "joinHomeBtn",
       "joinScreen", "mainApp", "joinName", "joinBtn", "joinStatus", "joinIntro", "focusToggle", "focusPanel", "voterRow",
       "sessionDetailsToggle", "sessionDetails", "joinCode", "joinByCodeRow", "joinByCodeBtn", "joinByCodeForm",
-      "joinCodeInput", "joinByCodeSubmit"
+      "joinCodeInput", "joinByCodeSubmit", "podium", "thirdPlacePanel"
     ].forEach(function (id) { els[id] = document.getElementById(id); });
   }
 
@@ -485,16 +551,38 @@
     renderBracket();
     renderLockUI();
     renderFocusPanel();
+    renderThirdPlacePanel();
     renderVoterRow();
     els.anonToggle.setAttribute("aria-checked", String(state.anonymous));
   }
 
+  function moveCompetitor(id, dir) {
+    if (state.locked) return;
+    var idx = state.competitors.findIndex(function (c) { return c.id === id; });
+    var newIdx = idx + dir;
+    if (idx < 0 || newIdx < 0 || newIdx >= state.competitors.length) return;
+    var tmp = state.competitors[idx];
+    state.competitors[idx] = state.competitors[newIdx];
+    state.competitors[newIdx] = tmp;
+    resetBracketState();
+    saveState();
+    renderAll();
+  }
+
   function renderChips() {
-    els.chips.innerHTML = state.competitors.map(function (c) {
+    var n = state.competitors.length;
+    els.chips.innerHTML = state.competitors.map(function (c, i) {
       return (
         '<div class="chip">' +
+        '<span class="chip-seed">' + (i + 1) + "</span>" +
         '<span class="chip-avatar">' + avatarInnerHTML(c) + "</span>" +
         "<span>" + esc(c.name) + (c.by ? '<span class="by"> &middot; ' + esc(c.by) + "</span>" : "") + "</span>" +
+        '<button class="chip-move" data-move-up="' + c.id + '" aria-label="Move ' + esc(c.name) + ' up the seeding"' + (i === 0 ? " disabled" : "") + '>' +
+        '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6"/></svg>' +
+        "</button>" +
+        '<button class="chip-move" data-move-down="' + c.id + '" aria-label="Move ' + esc(c.name) + ' down the seeding"' + (i === n - 1 ? " disabled" : "") + '>' +
+        '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 9l6 6 6-6"/></svg>' +
+        "</button>" +
         '<button class="chip-remove" data-remove="' + c.id + '" aria-label="Remove ' + esc(c.name) + '">' +
         '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>' +
         "</button></div>"
@@ -505,10 +593,16 @@
         if (state.locked) return;
         var id = Number(this.getAttribute("data-remove"));
         state.competitors = state.competitors.filter(function (c) { return c.id !== id; });
-        state.votes = {};
+        resetBracketState();
         saveState();
         renderAll();
       });
+    });
+    Array.prototype.forEach.call(els.chips.querySelectorAll("[data-move-up]"), function (btn) {
+      btn.addEventListener("click", function () { moveCompetitor(Number(this.getAttribute("data-move-up")), -1); });
+    });
+    Array.prototype.forEach.call(els.chips.querySelectorAll("[data-move-down]"), function (btn) {
+      btn.addEventListener("click", function () { moveCompetitor(Number(this.getAttribute("data-move-down")), 1); });
     });
     els.wineToggleLabel.textContent = state.competitors.length + " wine" + (state.competitors.length !== 1 ? "s" : "") + " · manage";
   }
@@ -520,6 +614,7 @@
       els.svgLayer.innerHTML = "";
       els.avatarLayer.innerHTML = "";
       els.statLine.textContent = "";
+      els.podium.hidden = true;
       return;
     }
     els.bracketWrap.classList.remove("empty");
@@ -605,6 +700,7 @@
       : '<div class="trophy-empty"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 21h8M12 17v4M5 4h14l-1 5a6 6 0 0 1-12 0L5 4z"/><path d="M5 4H3a2 2 0 0 0 0 4M19 4h2a2 2 0 0 1 0 4"/></svg></div>';
 
     els.avatarLayer.innerHTML = avatars + center;
+    renderPodium(data, championComp);
     Array.prototype.forEach.call(els.avatarLayer.querySelectorAll("[data-comp]"), function (el) {
       el.addEventListener("click", function () {
         var round = Number(this.getAttribute("data-round"));
@@ -653,8 +749,8 @@
 
   function headToHeadHTML(round, idx) {
     var data = buildData();
-    if (!data || !data.rounds[round] || !data.rounds[round][idx]) return '<div class="h2h-status">This match is no longer available.</div>';
-    var m = data.rounds[round][idx];
+    var m = round === "T" ? (data && data.thirdPlace) : (data && data.rounds[round] && data.rounds[round][idx]);
+    if (!data || !m) return '<div class="h2h-status">This match is no longer available.</div>';
 
     function sideHTML(side) {
       var comp = side === "a" ? m.a : m.b;
@@ -821,6 +917,40 @@
       wireHeadToHead(els.modalBody, modalMatch.round, modalMatch.idx);
     }
     renderFocusPanel();
+    renderThirdPlacePanel();
+  }
+
+  function renderThirdPlacePanel() {
+    var data = buildData();
+    if (!state.locked || !data || !data.thirdPlace || !data.thirdPlace.a || !data.thirdPlace.b) {
+      els.thirdPlacePanel.hidden = true;
+      return;
+    }
+    els.thirdPlacePanel.hidden = false;
+    els.thirdPlacePanel.innerHTML = '<div class="focus-panel-label">3rd place play-off</div>' + headToHeadHTML("T", 0);
+    wireHeadToHead(els.thirdPlacePanel, "T", 0);
+  }
+
+  function renderPodium(data, championComp) {
+    if (!championComp) { els.podium.hidden = true; return; }
+    var runnerUp = data.runnerUp;
+    var third = data.thirdPlace && data.thirdPlace.winner;
+    els.podium.hidden = false;
+    function slot(rank, comp, label) {
+      if (!comp) return '<div class="podium-slot podium-empty podium-rank-' + rank + '"><div class="podium-place">' + label + '</div><div class="podium-tbd">TBD</div></div>';
+      return '<div class="podium-slot podium-rank-' + rank + '">' +
+        '<div class="podium-avatar">' + avatarInnerHTML(comp) + "</div>" +
+        '<div class="podium-place">' + label + '</div>' +
+        '<div class="podium-name">' + esc(comp.name) + "</div>" +
+        "</div>";
+    }
+    els.podium.innerHTML =
+      '<div class="podium-title">Podium</div>' +
+      '<div class="podium-row">' +
+      slot(2, runnerUp, "2nd") +
+      slot(1, championComp, "1st") +
+      slot(3, third, "3rd") +
+      "</div>";
   }
 
   // ---------- edit card (pre-lock) ----------
@@ -875,7 +1005,7 @@
     if (removeBtn) removeBtn.addEventListener("click", function () {
       if (state.locked) return;
       state.competitors = state.competitors.filter(function (c) { return c.id !== compId; });
-      state.votes = {};
+      resetBracketState();
       saveState();
       closeModal();
       renderAll();
@@ -960,7 +1090,7 @@
       });
       els.wname.value = ""; els.wby.value = ""; els.wdesc.value = ""; pendingImg = null;
       els.photoBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8a2 2 0 0 1 2-2h1.5l1-1.5h7l1 1.5H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z"/><circle cx="12" cy="13" r="3.5"/></svg>';
-      state.votes = {};
+      resetBracketState();
       saveState();
       renderAll();
       els.wname.focus();
@@ -1004,6 +1134,7 @@
               if (m.winner) state.revealed[matchKey(r, i)] = true;
             });
           });
+          if (before.thirdPlace && before.thirdPlace.winner) state.revealed[matchKey("T", 0)] = true;
         }
       }
       state.anonymous = !state.anonymous;
@@ -1126,6 +1257,8 @@
       setConnectionStatus("", "Connecting…");
       joinSession(joinId, name);
     });
+    els.joinHomeBtn.addEventListener("click", function () { location.href = location.pathname; });
+    els.connectionHomeBtn.addEventListener("click", function () { location.href = location.pathname; });
   }
 
   // ---------- init ----------
@@ -1150,6 +1283,7 @@
     } else {
       els.tVal.textContent = state.tasters;
       renderAll();
+      if (state.locked && localStorage.getItem(SESSION_CODE_KEY)) startSession(true);
     }
   });
 })();
