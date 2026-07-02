@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Wine knockout</title>
+<meta name="description" content="A circular knockout bracket for wine tastings. Static, client-side, no backend." />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">&#127863;</span>
+        <span class="brand-title">Wine knockout</span>
+      </div>
+      <div class="header-controls">
+        <div class="tasters-control" title="Number of tasters — sets the majority needed to advance a wine">
+          <span class="tasters-label">Tasters</span>
+          <button id="tMinus" class="icon-btn small" aria-label="Fewer tasters">&minus;</button>
+          <span id="tVal" class="tasters-val">4</span>
+          <button id="tPlus" class="icon-btn small" aria-label="More tasters">+</button>
+        </div>
+        <button id="lockBtn" class="icon-btn" aria-label="Lock configuration" aria-pressed="false">
+          <svg id="lockIconOpen" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+          <svg id="lockIconClosed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" hidden><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </button>
+        <button id="menuBtn" class="icon-btn" aria-label="More options" aria-expanded="false">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div id="menuPanel" class="menu-panel" hidden>
+      <button id="exportBtn" class="menu-item">Export backup (JSON)</button>
+      <button id="importBtn" class="menu-item">Import backup</button>
+      <input type="file" id="importInput" accept="application/json" hidden />
+      <button id="resetBtn" class="menu-item danger">Reset everything</button>
+    </div>
+
+    <div id="manageBlock">
+      <button id="wineToggle" class="pill-toggle" aria-expanded="false">
+        <span id="wineToggleLabel">0 wines &middot; manage</span>
+        <svg id="wineToggleIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div id="winePanel" class="panel" hidden>
+        <div id="chips" class="chips"></div>
+        <div class="add-form">
+          <div class="add-row">
+            <input type="file" accept="image/*" id="wimg" hidden />
+            <button type="button" id="photoBtn" class="photo-btn" aria-label="Add photo">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8a2 2 0 0 1 2-2h1.5l1-1.5h7l1 1.5H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z"/><circle cx="12" cy="13" r="3.5"/></svg>
+            </button>
+            <input id="wname" type="text" placeholder="Wine name" />
+          </div>
+          <input id="wby" type="text" placeholder="Brought by (optional)" />
+          <textarea id="wdesc" placeholder="Tasting notes (optional)"></textarea>
+          <button id="addBtn" class="primary-btn" type="button">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            Add wine
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="lockedNote" class="locked-note" hidden>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <span>Configuration locked &middot; voting in progress</span>
+    </div>
+
+    <div id="statLine" class="stat-line"></div>
+
+    <div class="bracket-toolbar">
+      <button id="picksToggle" class="chip-btn" aria-pressed="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        Your picks
+      </button>
+    </div>
+
+    <div id="bracketWrap" class="bracket-wrap">
+      <svg id="svgLayer" viewBox="0 0 1000 1000" role="img" aria-label="Knockout bracket"></svg>
+      <div id="avatarLayer"></div>
+      <div id="emptyState" class="empty-state">
+        <p>Add wines above to build your knockout ring.</p>
+      </div>
+    </div>
+
+    <footer class="app-footer">
+      <p>Saved on this device only &middot; use <strong>Export backup</strong> to move it or back it up.</p>
+    </footer>
+  </div>
+
+  <div id="backdrop" class="backdrop" hidden></div>
+  <div id="modal" class="modal" hidden>
+    <div class="modal-handle"></div>
+    <div class="modal-head">
+      <span class="modal-title">Wine details</span>
+      <button id="modalClose" class="icon-btn" aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-photo-row">
+        <input type="file" accept="image/*" id="modalImgInput" hidden />
+        <button type="button" id="modalPhotoBtn" class="modal-photo-btn" aria-label="Change photo"></button>
+        <div class="modal-fields">
+          <input id="modalName" placeholder="Wine name" />
+          <input id="modalBy" placeholder="Brought by" />
+        </div>
+      </div>
+      <textarea id="modalDesc" placeholder="Tasting notes..."></textarea>
+      <div id="modalStatus" class="modal-status"></div>
+      <div id="modalVoteSection" class="modal-vote"></div>
+      <button id="modalRemove" class="text-danger-btn">Remove this wine</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
