@@ -8,37 +8,53 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="app">
+  <div id="joinScreen" class="join-screen" hidden>
+    <div class="join-card">
+      <span class="brand-icon" aria-hidden="true">&#127863;</span>
+      <h1>Join the tasting</h1>
+      <p id="joinIntro" class="join-intro">Enter your name so the host knows who's voting.</p>
+      <input id="joinName" type="text" placeholder="Your name" maxlength="24" />
+      <button id="joinBtn" class="primary-btn" type="button">Join</button>
+      <div id="joinStatus" class="join-status"></div>
+    </div>
+  </div>
+
+  <div class="app" id="mainApp">
+    <div id="connectionPill" class="connection-pill" hidden>
+      <span id="connectionDot" class="connection-dot"></span>
+      <span id="connectionText"></span>
+    </div>
+
     <header class="app-header">
       <div class="brand">
         <span class="brand-icon" aria-hidden="true">&#127863;</span>
         <span class="brand-title">Poor taste</span>
       </div>
       <div class="header-controls">
-        <div class="tasters-control" title="Number of tasters — sets the majority needed to advance a wine">
+        <div class="tasters-control host-only" title="Number of tasters — sets the majority needed to advance a wine">
           <span class="tasters-label">Tasters</span>
           <button id="tMinus" class="icon-btn small" aria-label="Fewer tasters">&minus;</button>
           <span id="tVal" class="tasters-val">4</span>
           <button id="tPlus" class="icon-btn small" aria-label="More tasters">+</button>
         </div>
-        <button id="lockBtn" class="icon-btn" aria-label="Lock configuration" aria-pressed="false">
+        <button id="lockBtn" class="icon-btn host-only" aria-label="Lock configuration" aria-pressed="false">
           <svg id="lockIconOpen" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
           <svg id="lockIconClosed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" hidden><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         </button>
-        <button id="menuBtn" class="icon-btn" aria-label="More options" aria-expanded="false">
+        <button id="menuBtn" class="icon-btn host-only" aria-label="More options" aria-expanded="false">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
         </button>
       </div>
     </header>
 
-    <div id="menuPanel" class="menu-panel" hidden>
+    <div id="menuPanel" class="menu-panel host-only" hidden>
       <button id="exportBtn" class="menu-item">Export backup (JSON)</button>
       <button id="importBtn" class="menu-item">Import backup</button>
       <input type="file" id="importInput" accept="application/json" hidden />
       <button id="resetBtn" class="menu-item danger">Reset everything</button>
     </div>
 
-    <div id="manageBlock">
+    <div id="manageBlock" class="host-only">
       <button id="wineToggle" class="pill-toggle" aria-expanded="false">
         <span id="wineToggleLabel">0 wines &middot; manage</span>
         <svg id="wineToggleIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
@@ -62,9 +78,28 @@
         </div>
       </div>
     </div>
+
     <div id="lockedNote" class="locked-note" hidden>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
       <span>Configuration locked &middot; voting in progress</span>
+    </div>
+
+    <div id="sessionBlock" class="session-block host-only" hidden>
+      <button id="startSessionBtn" class="pill-toggle" type="button">
+        <span>Start voting session</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V5a4 4 0 0 1 8 0v2"/></svg>
+      </button>
+      <div id="sessionActive" class="session-active" hidden>
+        <div class="session-row">
+          <div id="qrCode" class="qr-code"></div>
+          <div class="session-info">
+            <p class="session-hint">Scan to vote from your phone</p>
+            <button id="copyLinkBtn" class="text-link-btn" type="button">Copy link instead</button>
+            <p id="connectedCount" class="connected-count">0 connected</p>
+          </div>
+        </div>
+        <button id="stopSessionBtn" class="text-danger-btn" type="button">End session</button>
+      </div>
     </div>
 
     <div id="statLine" class="stat-line"></div>
@@ -92,7 +127,7 @@
       </div>
     </div>
 
-    <footer class="app-footer">
+    <footer class="app-footer host-only">
       <p>Saved on this device only &middot; use <strong>Export backup</strong> to move it or back it up.</p>
     </footer>
   </div>
@@ -118,10 +153,12 @@
       <textarea id="modalDesc" placeholder="Tasting notes..."></textarea>
       <div id="modalStatus" class="modal-status"></div>
       <div id="modalVoteSection" class="modal-vote"></div>
-      <button id="modalRemove" class="text-danger-btn">Remove this wine</button>
+      <button id="modalRemove" class="text-danger-btn host-only">Remove this wine</button>
     </div>
   </div>
 
+  <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -2,6 +2,7 @@
   "use strict";
 
   var STORAGE_KEY = "poor-taste-state-v1";
+  var VOTER_KEY = "poor-taste-voter-id";
   var CX = 500, CY = 500, OUTER = 430;
   var LEVEL_PCT = [9.5, 8, 7, 6.5, 6];
 
@@ -17,7 +18,21 @@
     overrides: {}
   };
 
-  var state = loadState();
+  var urlParams = new URLSearchParams(location.search);
+  var joinId = urlParams.get("join");
+  var isGuest = !!joinId;
+
+  function getOrCreateVoterId() {
+    var id = localStorage.getItem(VOTER_KEY);
+    if (!id) {
+      id = "v-" + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem(VOTER_KEY, id);
+    }
+    return id;
+  }
+  var myVoterId = getOrCreateVoterId();
+
+  var state = isGuest ? JSON.parse(JSON.stringify(defaultState)) : loadState();
 
   // ---------- persistence ----------
 
@@ -35,6 +50,7 @@
   }
 
   function saveState() {
+    if (isGuest) return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (e) {
@@ -86,32 +102,50 @@
     });
   }
 
-  function votesNeeded() { return Math.floor(state.tasters / 2) + 1; }
-  function voteKey(r, i, side) { return r + "-" + i + "-" + side; }
-  function getVote(r, i, side) {
-    var v = state.votes[voteKey(r, i, side)] || {};
-    var yourVote = !!v.yourVote;
-    var others = v.others || 0;
-    return { yourVote: yourVote, others: others, count: (yourVote ? 1 : 0) + others };
-  }
-  function setYourVote(r, i, side, yourVote) {
-    var key = voteKey(r, i, side);
-    var v = state.votes[key] || { yourVote: false, others: 0 };
-    state.votes[key] = { yourVote: yourVote, others: v.others };
-  }
-  function setOthers(r, i, side, others) {
-    var key = voteKey(r, i, side);
-    var v = state.votes[key] || { yourVote: false, others: 0 };
-    state.votes[key] = { yourVote: v.yourVote, others: Math.max(0, others) };
-  }
+  // ---------- vote model (per-voter identity) ----------
 
+  function votesNeeded() { return Math.floor(state.tasters / 2) + 1; }
   function matchKey(r, i) { return r + "-" + i; }
+
+  function getMatchVotes(r, i) {
+    return state.votes[matchKey(r, i)] || { byVoter: {}, manualOthers: { a: 0, b: 0 } };
+  }
+  function countFor(r, i, side) {
+    var v = getMatchVotes(r, i);
+    var n = v.manualOthers[side] || 0;
+    Object.keys(v.byVoter).forEach(function (vid) { if (v.byVoter[vid] === side) n++; });
+    return n;
+  }
+  function getVote(r, i, side) {
+    var v = getMatchVotes(r, i);
+    return {
+      yourVote: v.byVoter[myVoterId] === side,
+      count: countFor(r, i, side),
+      manual: v.manualOthers[side] || 0
+    };
+  }
+  function castVote(r, i, side, voterId) {
+    var mk = matchKey(r, i);
+    var v = state.votes[mk] || { byVoter: {}, manualOthers: { a: 0, b: 0 } };
+    v.byVoter[voterId] = side;
+    state.votes[mk] = v;
+  }
+  function removeVoteFor(r, i, voterId) {
+    var mk = matchKey(r, i);
+    var v = state.votes[mk];
+    if (v && v.byVoter) delete v.byVoter[voterId];
+  }
+  function setManualOthers(r, i, side, count) {
+    var mk = matchKey(r, i);
+    var v = state.votes[mk] || { byVoter: {}, manualOthers: { a: 0, b: 0 } };
+    v.manualOthers[side] = Math.max(0, count);
+    state.votes[mk] = v;
+  }
   function totalVotesFor(r, i) { return getVote(r, i, "a").count + getVote(r, i, "b").count; }
   function isFullyVoted(r, i) { return totalVotesFor(r, i) >= state.tasters; }
   function isRevealed(r, i) { return !state.anonymous || !!state.revealed[matchKey(r, i)]; }
   function clearMatchVotes(r, i) {
-    delete state.votes[voteKey(r, i, "a")];
-    delete state.votes[voteKey(r, i, "b")];
+    delete state.votes[matchKey(r, i)];
     delete state.revealed[matchKey(r, i)];
     delete state.overrides[matchKey(r, i)];
   }
@@ -238,6 +272,161 @@
     return false;
   }
 
+  // ---------- networking (PeerJS) ----------
+
+  var peer = null;
+  var guestConns = {}; // host side: connId -> {conn, voterId, name}
+  var hostConn = null; // guest side
+  var reconnectTimer = null;
+
+  function shortId() {
+    var chars = "abcdefghijkmnpqrstuvwxyz23456789";
+    var s = "";
+    for (var i = 0; i < 7; i++) s += chars[Math.floor(Math.random() * chars.length)];
+    return s;
+  }
+
+  function publicState() {
+    return {
+      tasters: state.tasters,
+      locked: state.locked,
+      competitors: state.competitors,
+      votes: state.votes,
+      anonymous: state.anonymous,
+      revealed: state.revealed,
+      overrides: state.overrides
+    };
+  }
+
+  function broadcastState() {
+    var payload = { type: "state", state: publicState() };
+    Object.keys(guestConns).forEach(function (k) {
+      var g = guestConns[k];
+      if (g.conn.open) g.conn.send(payload);
+    });
+  }
+
+  function updateConnectedUI() {
+    var list = Object.keys(guestConns).map(function (k) { return guestConns[k].name; }).filter(Boolean);
+    var count = Object.keys(guestConns).length;
+    els.connectedCount.textContent = count + " connected" + (list.length ? ": " + list.join(", ") : "");
+  }
+
+  function applyHostAction(action, round, idx, side, voterId) {
+    var mk = matchKey(round, idx);
+    if (action === "vote") castVote(round, idx, side, voterId);
+    else if (action === "unvote") removeVoteFor(round, idx, voterId);
+    else if (action === "reveal") state.revealed[mk] = true;
+    else if (action === "revote") clearMatchVotes(round, idx);
+    else if (action === "declare-a") state.overrides[mk] = "a";
+    else if (action === "declare-b") state.overrides[mk] = "b";
+  }
+
+  function startSession() {
+    if (typeof Peer === "undefined") { alert("Couldn't load the networking library. Check your connection and try again."); return; }
+    peer = new Peer(shortId());
+    peer.on("open", function (id) {
+      var url = location.origin + location.pathname + "?join=" + id;
+      els.startSessionBtn.hidden = true;
+      els.sessionActive.hidden = false;
+      els.qrCode.innerHTML = "";
+      new QRCode(els.qrCode, { text: url, width: 120, height: 120, correctLevel: QRCode.CorrectLevel.M });
+      els.copyLinkBtn.dataset.url = url;
+      updateConnectedUI();
+    });
+    peer.on("connection", function (conn) {
+      guestConns[conn.peer] = { conn: conn, voterId: null, name: "" };
+      conn.on("data", function (msg) { handleGuestMessage(conn, msg); });
+      conn.on("close", function () { delete guestConns[conn.peer]; updateConnectedUI(); });
+    });
+    peer.on("error", function (err) {
+      console.warn("Peer error", err);
+      if (peer) peer.destroy();
+      peer = null;
+      els.startSessionBtn.hidden = false;
+      els.sessionActive.hidden = true;
+      alert("Couldn't start the session (" + (err && err.type || "connection error") + "). Try again.");
+    });
+  }
+
+  function handleGuestMessage(conn, msg) {
+    if (msg.type === "hello") {
+      guestConns[conn.peer].voterId = msg.voterId;
+      guestConns[conn.peer].name = msg.name || "Guest";
+      updateConnectedUI();
+      conn.send({ type: "state", state: publicState() });
+    } else if (msg.type === "action") {
+      applyHostAction(msg.action, msg.round, msg.idx, msg.side, msg.voterId);
+      saveState();
+      renderAll();
+      if (modalPin) renderModalComputed();
+      broadcastState();
+    }
+  }
+
+  function stopSession() {
+    Object.keys(guestConns).forEach(function (k) { guestConns[k].conn.close(); });
+    guestConns = {};
+    if (peer) peer.destroy();
+    peer = null;
+    els.startSessionBtn.hidden = false;
+    els.sessionActive.hidden = true;
+  }
+
+  function setConnectionStatus(mode, text) {
+    els.connectionPill.hidden = false;
+    els.connectionDot.className = "connection-dot " + mode;
+    els.connectionText.textContent = text;
+  }
+
+  function joinSession(hostId, name) {
+    if (typeof Peer === "undefined") { setConnectionStatus("off", "Couldn't load the networking library"); return; }
+    peer = new Peer();
+    peer.on("open", function () {
+      connectToHost(hostId, name);
+    });
+    peer.on("error", function (err) {
+      console.warn("Peer error", err);
+      var msg = (err && err.type === "peer-unavailable") ? "This session isn't active anymore" : "Couldn't connect";
+      setConnectionStatus("off", msg);
+    });
+  }
+
+  function connectToHost(hostId, name) {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    setConnectionStatus("", "Connecting…");
+    hostConn = peer.connect(hostId, { reliable: true });
+    hostConn.on("open", function () {
+      hostConn.send({ type: "hello", voterId: myVoterId, name: name });
+      setConnectionStatus("on", "Connected as " + name);
+    });
+    hostConn.on("data", function (msg) {
+      if (msg.type === "state") applyRemoteState(msg.state);
+    });
+    hostConn.on("close", function () {
+      setConnectionStatus("off", "Disconnected — reconnecting…");
+      reconnectTimer = setTimeout(function () { connectToHost(hostId, name); }, 3000);
+    });
+  }
+
+  function applyRemoteState(remote) {
+    state.tasters = remote.tasters;
+    state.locked = remote.locked;
+    state.competitors = remote.competitors;
+    state.votes = remote.votes;
+    state.anonymous = remote.anonymous;
+    state.revealed = remote.revealed;
+    state.overrides = remote.overrides;
+    renderAll();
+    if (modalPin) renderModalComputed();
+  }
+
+  function sendGuestAction(action, round, idx, side) {
+    if (hostConn && hostConn.open) {
+      hostConn.send({ type: "action", action: action, round: round, idx: idx, side: side, voterId: myVoterId });
+    }
+  }
+
   // ---------- rendering ----------
 
   var els = {};
@@ -248,7 +437,9 @@
       "tVal", "tMinus", "tPlus", "picksToggle", "anonToggle", "anonInfoBtn", "anonTooltip", "modal", "backdrop", "modalName", "modalBy", "modalDesc",
       "modalPhotoBtn", "modalImgInput", "modalStatus", "modalVoteSection", "modalRemove", "modalClose",
       "wname", "wby", "wdesc", "wimg", "photoBtn", "addBtn", "menuBtn", "menuPanel", "exportBtn",
-      "importBtn", "importInput", "resetBtn"
+      "importBtn", "importInput", "resetBtn", "sessionBlock", "startSessionBtn", "sessionActive", "qrCode",
+      "copyLinkBtn", "connectedCount", "stopSessionBtn", "connectionPill", "connectionDot", "connectionText",
+      "joinScreen", "mainApp", "joinName", "joinBtn", "joinStatus", "joinIntro"
     ].forEach(function (id) { els[id] = document.getElementById(id); });
   }
 
@@ -399,6 +590,7 @@
     els.lockedNote.hidden = !state.locked;
     els.tMinus.disabled = state.locked;
     els.tPlus.disabled = state.locked;
+    if (!isGuest) els.sessionBlock.hidden = !state.locked;
   }
 
   // ---------- modal ----------
@@ -485,46 +677,60 @@
       html += '<div style="font-size:12px;margin-bottom:4px;">' + Math.min(v.count, data.needed) + " of " + data.needed + " votes to advance</div>" +
         '<div class="vote-progress"><div class="vote-progress-fill" style="width:' + pct + '%;"></div></div>';
       if (tied) {
-        html += '<div class="tie-panel">' +
-          '<div class="vote-locked-hint">Tied — pick how to resolve it</div>' +
-          '<button class="vote-btn remove" data-action="revote">Revote</button>' +
-          '<button class="vote-btn cast" data-action="declare-a">Declare ' + esc(m.a.name) + ' winner</button>' +
-          '<button class="vote-btn cast" data-action="declare-b">Declare ' + esc(m.b.name) + ' winner</button>' +
-          '</div>';
+        if (isGuest) {
+          html += '<div class="tie-panel"><div class="vote-locked-hint">Tied — waiting for the host to resolve it</div></div>';
+        } else {
+          html += '<div class="tie-panel">' +
+            '<div class="vote-locked-hint">Tied — pick how to resolve it</div>' +
+            '<button class="vote-btn remove" data-action="revote">Revote</button>' +
+            '<button class="vote-btn cast" data-action="declare-a">Declare ' + esc(m.a.name) + ' winner</button>' +
+            '<button class="vote-btn cast" data-action="declare-b">Declare ' + esc(m.b.name) + ' winner</button>' +
+            '</div>';
+        }
       }
     }
 
     html += v.yourVote
       ? '<button class="vote-btn remove" data-action="unvote">Remove your vote</button>'
       : '<button class="vote-btn cast" data-action="vote">Vote for this wine</button>';
-    html +=
-      '<div class="others-row">' +
-      '<span>Other tasters</span>' +
-      '<div class="stepper">' +
-      '<button class="icon-btn small" data-action="others-minus" aria-label="Fewer other votes">&minus;</button>' +
-      '<span>' + v.others + '</span>' +
-      '<button class="icon-btn small" data-action="others-plus" aria-label="More other votes">+</button>' +
-      '</div></div>';
+    if (!isGuest) {
+      html +=
+        '<div class="others-row">' +
+        '<span>Other tasters</span>' +
+        '<div class="stepper">' +
+        '<button class="icon-btn small" data-action="others-minus" aria-label="Fewer other votes">&minus;</button>' +
+        '<span>' + v.manual + '</span>' +
+        '<button class="icon-btn small" data-action="others-plus" aria-label="More other votes">+</button>' +
+        '</div></div>';
+    }
     els.modalVoteSection.innerHTML = html;
 
-    function act(sel, fn) {
+    function act(sel, action) {
       var el = els.modalVoteSection.querySelector(sel);
-      if (el) el.addEventListener("click", function () {
+      if (!el) return;
+      el.addEventListener("click", function () {
         if (!state.locked) return;
-        fn();
+        if (isGuest) {
+          sendGuestAction(action, round, idx, side);
+          return;
+        }
+        if (action === "others-minus") setManualOthers(round, idx, side, v.manual - 1);
+        else if (action === "others-plus") setManualOthers(round, idx, side, v.manual + 1);
+        else applyHostAction(action, round, idx, side, myVoterId);
         saveState();
         renderAll();
         renderModalComputed();
+        broadcastState();
       });
     }
-    act('[data-action="vote"]', function () { setYourVote(round, idx, side, true); });
-    act('[data-action="unvote"]', function () { setYourVote(round, idx, side, false); });
-    act('[data-action="others-minus"]', function () { setOthers(round, idx, side, v.others - 1); });
-    act('[data-action="others-plus"]', function () { setOthers(round, idx, side, v.others + 1); });
-    act('[data-action="reveal"]', function () { state.revealed[matchKey(round, idx)] = true; });
-    act('[data-action="revote"]', function () { clearMatchVotes(round, idx); });
-    act('[data-action="declare-a"]', function () { state.overrides[matchKey(round, idx)] = "a"; });
-    act('[data-action="declare-b"]', function () { state.overrides[matchKey(round, idx)] = "b"; });
+    act('[data-action="vote"]', "vote");
+    act('[data-action="unvote"]', "unvote");
+    act('[data-action="others-minus"]', "others-minus");
+    act('[data-action="others-plus"]', "others-plus");
+    act('[data-action="reveal"]', "reveal");
+    act('[data-action="revote"]', "revote");
+    act('[data-action="declare-a"]', "declare-a");
+    act('[data-action="declare-b"]', "declare-b");
   }
 
   // ---------- events ----------
@@ -639,6 +845,7 @@
     });
 
     els.anonToggle.addEventListener("click", function () {
+      if (isGuest) return;
       if (!state.anonymous) {
         var before = buildData();
         if (before) {
@@ -653,6 +860,7 @@
       saveState();
       renderAll();
       if (modalPin) renderModalComputed();
+      broadcastState();
     });
 
     els.lockBtn.addEventListener("click", function () {
@@ -660,6 +868,7 @@
         state.locked = false;
         state.votes = {};
         closeModal();
+        stopSession();
       } else {
         state.locked = true;
       }
@@ -713,11 +922,32 @@
     });
     els.resetBtn.addEventListener("click", function () {
       if (!confirm("Reset everything? This clears all wines and votes on this device.")) return;
+      stopSession();
       state = JSON.parse(JSON.stringify(defaultState));
       saveState();
       els.tVal.textContent = state.tasters;
       renderAll();
       els.menuPanel.hidden = true;
+    });
+
+    els.startSessionBtn.addEventListener("click", startSession);
+    els.stopSessionBtn.addEventListener("click", stopSession);
+    els.copyLinkBtn.addEventListener("click", function () {
+      var url = this.dataset.url;
+      if (!url) return;
+      navigator.clipboard.writeText(url).then(function () {
+        els.copyLinkBtn.textContent = "Copied!";
+        setTimeout(function () { els.copyLinkBtn.textContent = "Copy link instead"; }, 1500);
+      });
+    });
+
+    els.joinBtn.addEventListener("click", function () {
+      var name = els.joinName.value.trim();
+      if (!name) { els.joinStatus.textContent = "Enter your name to join."; els.joinStatus.className = "join-status error"; return; }
+      els.joinScreen.hidden = true;
+      els.mainApp.hidden = false;
+      setConnectionStatus("", "Connecting…");
+      joinSession(joinId, name);
     });
   }
 
@@ -726,7 +956,15 @@
   document.addEventListener("DOMContentLoaded", function () {
     cacheEls();
     wireEvents();
-    els.tVal.textContent = state.tasters;
-    renderAll();
+
+    if (isGuest) {
+      document.body.classList.add("guest-mode");
+      els.mainApp.hidden = true;
+      els.joinScreen.hidden = false;
+      els.joinName.focus();
+    } else {
+      els.tVal.textContent = state.tasters;
+      renderAll();
+    }
   });
 })();

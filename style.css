@@ -12,6 +12,7 @@
   --gold-bg: #f7ecd9;
   --danger: #b6432f;
   --danger-bg: #f8e6e1;
+  --success: #4a8a5c;
   --line: rgba(43, 36, 32, 0.55);
   --radius: 10px;
 }
@@ -31,6 +32,7 @@
     --gold-bg: #3a2f19;
     --danger: #e2897a;
     --danger-bg: #3a211c;
+    --success: #7ec592;
     --line: rgba(241, 233, 221, 0.4);
   }
 }
@@ -460,3 +462,52 @@ button, input, textarea {
 }
 
 input:disabled, textarea:disabled, button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+body.guest-mode .host-only { display: none !important; }
+
+.join-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.join-card {
+  width: 100%;
+  max-width: 340px;
+  text-align: center;
+}
+.join-card .brand-icon { font-size: 40px; display: block; margin-bottom: 10px; }
+.join-card h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+.join-intro { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
+.join-card input {
+  width: 100%; border: 0.5px solid var(--border); border-radius: 8px;
+  padding: 11px 12px; background: var(--card); margin-bottom: 10px; text-align: center; font-size: 15px;
+}
+.join-status { margin-top: 14px; font-size: 13px; color: var(--muted); }
+.join-status.error { color: var(--danger); }
+
+.connection-pill {
+  display: flex; align-items: center; gap: 7px;
+  background: var(--card); border: 0.5px solid var(--border); border-radius: 999px;
+  padding: 6px 12px; font-size: 12px; color: var(--muted); margin-bottom: 12px; width: fit-content;
+}
+.connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+.connection-dot.on { background: var(--success); }
+.connection-dot.off { background: var(--danger); }
+
+.session-block { margin-bottom: 10px; }
+.session-active {
+  background: var(--card); border: 0.5px solid var(--border); border-radius: 12px; padding: 14px;
+}
+.session-row { display: flex; gap: 14px; align-items: center; }
+.qr-code { flex-shrink: 0; line-height: 0; border-radius: 8px; overflow: hidden; }
+.qr-code img, .qr-code canvas { display: block; width: 120px; height: 120px; }
+.session-info { flex: 1; min-width: 0; }
+.session-hint { font-size: 13px; margin: 0 0 6px; color: var(--muted); }
+.text-link-btn {
+  background: none; border: none; color: var(--accent); font-size: 13px; font-weight: 600;
+  padding: 0; cursor: pointer; text-align: left;
+}
+.connected-count { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+.session-active .text-danger-btn { margin-top: 12px; padding: 8px; border-top: 0.5px solid var(--border); border-radius: 0; }
