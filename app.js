@@ -11,7 +11,10 @@
     competitors: [],
     nextId: 1,
     votes: {},
-    showPicks: false
+    showPicks: false,
+    anonymous: false,
+    revealed: {},
+    overrides: {}
   };
 
   var state = loadState();
@@ -102,6 +105,17 @@
     state.votes[key] = { yourVote: v.yourVote, others: Math.max(0, others) };
   }
 
+  function matchKey(r, i) { return r + "-" + i; }
+  function totalVotesFor(r, i) { return getVote(r, i, "a").count + getVote(r, i, "b").count; }
+  function isFullyVoted(r, i) { return totalVotesFor(r, i) >= state.tasters; }
+  function isRevealed(r, i) { return !state.anonymous || !!state.revealed[matchKey(r, i)]; }
+  function clearMatchVotes(r, i) {
+    delete state.votes[voteKey(r, i, "a")];
+    delete state.votes[voteKey(r, i, "b")];
+    delete state.revealed[matchKey(r, i)];
+    delete state.overrides[matchKey(r, i)];
+  }
+
   // ---------- bracket math ----------
 
   function bracketSizeFor(n) {
@@ -148,8 +162,13 @@
       if (m.a === "BYE" && m.b) { m.winner = m.b; return m.winner; }
       if (m.b === "BYE" && m.a) { m.winner = m.a; return m.winner; }
       if (m.a && m.b && m.a !== "BYE" && m.b !== "BYE" && state.locked) {
-        var va = getVote(r, i, "a").count, vb = getVote(r, i, "b").count;
-        if (va >= needed) m.winner = m.a; else if (vb >= needed) m.winner = m.b;
+        var override = state.overrides[matchKey(r, i)];
+        if (override === "a") { m.winner = m.a; return m.winner; }
+        if (override === "b") { m.winner = m.b; return m.winner; }
+        if (isRevealed(r, i)) {
+          var va = getVote(r, i, "a").count, vb = getVote(r, i, "b").count;
+          if (va >= needed) m.winner = m.a; else if (vb >= needed) m.winner = m.b;
+        }
       }
       return m.winner;
     }
@@ -226,7 +245,7 @@
     [
       "svgLayer", "avatarLayer", "bracketWrap", "statLine", "chips", "wineToggle", "wineToggleLabel",
       "wineToggleIcon", "winePanel", "manageBlock", "lockedNote", "lockBtn", "lockIconOpen", "lockIconClosed",
-      "tVal", "tMinus", "tPlus", "picksToggle", "modal", "backdrop", "modalName", "modalBy", "modalDesc",
+      "tVal", "tMinus", "tPlus", "picksToggle", "anonToggle", "modal", "backdrop", "modalName", "modalBy", "modalDesc",
       "modalPhotoBtn", "modalImgInput", "modalStatus", "modalVoteSection", "modalRemove", "modalClose",
       "wname", "wby", "wdesc", "wimg", "photoBtn", "addBtn", "menuBtn", "menuPanel", "exportBtn",
       "importBtn", "importInput", "resetBtn"
@@ -236,6 +255,7 @@
   var pendingImg = null;
   var formOpen = false;
   var modalCompId = null;
+  var modalPin = null;
 
   function renderAll() {
     renderChips();
@@ -292,7 +312,8 @@
         svgPaths += '<path d="' + connectorPath(data, r, i) + '" fill="none" stroke="var(--line)" stroke-opacity="0.5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
         if (!data.rounds[r][i].winner) {
           var p = pt(data.ECHO_R[r + 1], data.matchAngle[r][i]);
-          svgDots += '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="4" fill="var(--muted)"/>';
+          var tied = data.rounds[r][i].a && data.rounds[r][i].b && data.rounds[r][i].a !== "BYE" && data.rounds[r][i].b !== "BYE" && isFullyVoted(r, i);
+          svgDots += '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="' + (tied ? 5 : 4) + '" fill="' + (tied ? "var(--danger)" : "var(--muted)") + '"/>';
         }
       }
     }
@@ -311,22 +332,31 @@
         var p = pt(radius, angle);
         var isChamp = k === data.R;
         var isFrontier = k === st.roundsWon;
+        var pinnedRound = isChamp ? data.R - 1 : k;
+        var pinnedIdx = idxAt(si, pinnedRound), pinnedSide = sideAt(si, pinnedRound);
+        var pinnedMatch = data.rounds[pinnedRound][pinnedIdx];
+        var votable = pinnedMatch.a && pinnedMatch.b && pinnedMatch.a !== "BYE" && pinnedMatch.b !== "BYE";
         var pct = isChamp ? 13 : LEVEL_PCT[Math.min(k, 4)];
         var border = "2px solid var(--border)";
         var faded = "";
         var badge = "";
+        var crown = "";
         if (isChamp) {
           border = "3px solid var(--gold)";
         } else if (isFrontier && st.eliminated) {
           faded = "filter:grayscale(0.75);";
-        } else if (isFrontier && st.roundsWon < data.R) {
-          var idx = idxAt(si, st.roundsWon), side = sideAt(si, st.roundsWon);
-          var m = data.rounds[st.roundsWon][idx];
-          var reachable = m.a && m.b && m.a !== "BYE" && m.b !== "BYE" && !m.winner;
-          if (reachable) {
-            var v = getVote(st.roundsWon, idx, side);
-            border = v.yourVote ? "3px solid var(--accent)" : "2px solid var(--border)";
-            if (v.count > 0) badge = '<span class="avatar-badge">' + v.count + "</span>";
+        } else if (isFrontier && st.roundsWon < data.R && votable) {
+          var tiedHere = !pinnedMatch.winner && isFullyVoted(pinnedRound, pinnedIdx);
+          var vHere = getVote(pinnedRound, pinnedIdx, pinnedSide);
+          if (tiedHere) border = "3px solid var(--danger)";
+          else border = vHere.yourVote ? "3px solid var(--accent)" : "2px solid var(--border)";
+        }
+        if (k >= 1 && !isChamp) crown = '<span class="avatar-crown" title="Won this match">&#128081;</span>';
+        if (votable) {
+          var vBadge = getVote(pinnedRound, pinnedIdx, pinnedSide);
+          if (vBadge.count > 0) {
+            if (isRevealed(pinnedRound, pinnedIdx)) badge = '<span class="avatar-badge">' + vBadge.count + "</span>";
+            else badge = '<span class="avatar-badge hidden-badge" title="Votes hidden until revealed">&bull;</span>';
           }
         }
         if (state.showPicks) {
@@ -335,9 +365,9 @@
           else if (!isChamp) border = "3px solid var(--accent)";
         }
         avatars +=
-          '<div class="avatar" data-comp="' + c.id + '" style="left:' + p[0] / 10 + "%;top:" + p[1] / 10 + "%;width:" + pct + "%;height:" + pct + "%;" + faded + '">' +
+          '<div class="avatar" data-comp="' + c.id + '" data-round="' + pinnedRound + '" data-match="' + pinnedIdx + '" data-side="' + pinnedSide + '" style="left:' + p[0] / 10 + "%;top:" + p[1] / 10 + "%;width:" + pct + "%;height:" + pct + "%;" + faded + '">' +
           '<div class="avatar-inner" style="border:' + border + ';">' + avatarInnerHTML(c) + "</div>" +
-          badge + "</div>";
+          crown + badge + "</div>";
       }
     });
 
@@ -347,7 +377,14 @@
 
     els.avatarLayer.innerHTML = avatars + center;
     Array.prototype.forEach.call(els.avatarLayer.querySelectorAll("[data-comp]"), function (el) {
-      el.addEventListener("click", function () { openModalFor(Number(this.getAttribute("data-comp"))); });
+      el.addEventListener("click", function () {
+        openModalFor(
+          Number(this.getAttribute("data-comp")),
+          Number(this.getAttribute("data-round")),
+          Number(this.getAttribute("data-match")),
+          this.getAttribute("data-side")
+        );
+      });
     });
   }
 
@@ -364,8 +401,9 @@
 
   // ---------- modal ----------
 
-  function openModalFor(id) {
+  function openModalFor(id, round, matchIdx, side) {
     modalCompId = id;
+    modalPin = { round: round, matchIdx: matchIdx, side: side };
     var c = state.competitors.find(function (x) { return x.id === id; });
     if (!c) return;
     els.modalName.value = c.name;
@@ -382,46 +420,78 @@
     els.modal.hidden = true;
     els.backdrop.hidden = true;
     modalCompId = null;
+    modalPin = null;
   }
 
   function renderModalComputed() {
     var c = state.competitors.find(function (x) { return x.id === modalCompId; });
-    if (!c) { els.modalStatus.innerHTML = ""; els.modalVoteSection.innerHTML = ""; return; }
+    if (!c || !modalPin) { els.modalStatus.innerHTML = ""; els.modalVoteSection.innerHTML = ""; return; }
     var data = buildData();
     var si = data.slotIndex[c.id];
     if (si === undefined) { els.modalStatus.innerHTML = ""; els.modalVoteSection.innerHTML = ""; return; }
-    var st = statusFor(data, si, c.id);
 
-    if (st.roundsWon === data.R) {
-      els.modalStatus.innerHTML = "\u{1F3C6} Champion";
-      els.modalVoteSection.innerHTML = "";
-      return;
-    }
-    if (st.eliminated) {
-      els.modalStatus.textContent = "Eliminated";
-      els.modalVoteSection.innerHTML = "";
-      return;
-    }
-    var idx = idxAt(si, st.roundsWon), side = sideAt(si, st.roundsWon);
-    var m = data.rounds[st.roundsWon][idx];
+    var round = modalPin.round, idx = modalPin.matchIdx, side = modalPin.side;
+    var m = data.rounds[round][idx];
+    var mine = side === "a" ? m.a : m.b;
     var opponent = side === "a" ? m.b : m.a;
+
+    if (opponent === "BYE") {
+      els.modalStatus.textContent = "Bye — advanced automatically";
+      els.modalVoteSection.innerHTML = "";
+      return;
+    }
     if (!opponent) {
       els.modalStatus.textContent = "Waiting for an opponent";
       els.modalVoteSection.innerHTML = "";
       return;
     }
-    els.modalStatus.textContent = "Facing " + opponent.name;
+    if (m.winner && m.winner !== "BYE") {
+      if (m.winner.id === mine.id && round === data.R - 1) {
+        els.modalStatus.innerHTML = "\u{1F3C6} Champion";
+      } else if (m.winner.id === mine.id) {
+        els.modalStatus.textContent = "Won this match";
+      } else {
+        els.modalStatus.textContent = "Lost to " + m.winner.name;
+      }
+    } else {
+      els.modalStatus.textContent = "Facing " + opponent.name;
+    }
 
     if (!state.locked) {
       els.modalVoteSection.innerHTML = '<div class="vote-locked-hint">Lock the configuration to start voting</div>';
       return;
     }
 
-    var v = getVote(st.roundsWon, idx, side);
-    var pct = Math.min(100, Math.round((v.count / data.needed) * 100));
-    var html =
-      '<div style="font-size:12px;margin-bottom:4px;">' + v.count + " of " + data.needed + " votes to advance</div>" +
-      '<div class="vote-progress"><div class="vote-progress-fill" style="width:' + pct + '%;"></div></div>';
+    var total = totalVotesFor(round, idx);
+    var fully = isFullyVoted(round, idx);
+    var revealed = isRevealed(round, idx);
+    var tied = fully && !m.winner;
+    var v = getVote(round, idx, side);
+    var html = "";
+
+    if (!revealed) {
+      var progressPct = Math.min(100, Math.round((total / state.tasters) * 100));
+      html += '<div style="font-size:12px;margin-bottom:4px;">' + total + " of " + state.tasters + " tasters have voted</div>" +
+        '<div class="vote-progress"><div class="vote-progress-fill" style="width:' + progressPct + '%;"></div></div>';
+      if (fully) {
+        html += '<button class="vote-btn cast" data-action="reveal">Reveal result</button>';
+      } else {
+        html += '<div class="vote-locked-hint">Votes stay hidden until everyone has voted</div>';
+      }
+    } else {
+      var pct = Math.min(100, Math.round((v.count / data.needed) * 100));
+      html += '<div style="font-size:12px;margin-bottom:4px;">' + Math.min(v.count, data.needed) + " of " + data.needed + " votes to advance</div>" +
+        '<div class="vote-progress"><div class="vote-progress-fill" style="width:' + pct + '%;"></div></div>';
+      if (tied) {
+        html += '<div class="tie-panel">' +
+          '<div class="vote-locked-hint">Tied — pick how to resolve it</div>' +
+          '<button class="vote-btn remove" data-action="revote">Revote</button>' +
+          '<button class="vote-btn cast" data-action="declare-a">Declare ' + esc(m.a.name) + ' winner</button>' +
+          '<button class="vote-btn cast" data-action="declare-b">Declare ' + esc(m.b.name) + ' winner</button>' +
+          '</div>';
+      }
+    }
+
     html += v.yourVote
       ? '<button class="vote-btn remove" data-action="unvote">Remove your vote</button>'
       : '<button class="vote-btn cast" data-action="vote">Vote for this wine</button>';
@@ -435,38 +505,24 @@
       '</div></div>';
     els.modalVoteSection.innerHTML = html;
 
-    var voteBtn = els.modalVoteSection.querySelector('[data-action="vote"]');
-    if (voteBtn) voteBtn.addEventListener("click", function () {
-      if (!state.locked) return;
-      setYourVote(st.roundsWon, idx, side, true);
-      saveState();
-      renderAll();
-      renderModalComputed();
-    });
-    var unvoteBtn = els.modalVoteSection.querySelector('[data-action="unvote"]');
-    if (unvoteBtn) unvoteBtn.addEventListener("click", function () {
-      if (!state.locked) return;
-      setYourVote(st.roundsWon, idx, side, false);
-      saveState();
-      renderAll();
-      renderModalComputed();
-    });
-    var othersMinus = els.modalVoteSection.querySelector('[data-action="others-minus"]');
-    othersMinus.addEventListener("click", function () {
-      if (!state.locked) return;
-      setOthers(st.roundsWon, idx, side, v.others - 1);
-      saveState();
-      renderAll();
-      renderModalComputed();
-    });
-    var othersPlus = els.modalVoteSection.querySelector('[data-action="others-plus"]');
-    othersPlus.addEventListener("click", function () {
-      if (!state.locked) return;
-      setOthers(st.roundsWon, idx, side, v.others + 1);
-      saveState();
-      renderAll();
-      renderModalComputed();
-    });
+    function act(sel, fn) {
+      var el = els.modalVoteSection.querySelector(sel);
+      if (el) el.addEventListener("click", function () {
+        if (!state.locked) return;
+        fn();
+        saveState();
+        renderAll();
+        renderModalComputed();
+      });
+    }
+    act('[data-action="vote"]', function () { setYourVote(round, idx, side, true); });
+    act('[data-action="unvote"]', function () { setYourVote(round, idx, side, false); });
+    act('[data-action="others-minus"]', function () { setOthers(round, idx, side, v.others - 1); });
+    act('[data-action="others-plus"]', function () { setOthers(round, idx, side, v.others + 1); });
+    act('[data-action="reveal"]', function () { state.revealed[matchKey(round, idx)] = true; });
+    act('[data-action="revote"]', function () { clearMatchVotes(round, idx); });
+    act('[data-action="declare-a"]', function () { state.overrides[matchKey(round, idx)] = "a"; });
+    act('[data-action="declare-b"]', function () { state.overrides[matchKey(round, idx)] = "b"; });
   }
 
   // ---------- events ----------
@@ -543,9 +599,7 @@
       state.votes = {};
       saveState();
       renderAll();
-      formOpen = false;
-      els.winePanel.hidden = true;
-      els.wineToggle.setAttribute("aria-expanded", "false");
+      els.wname.focus();
     });
 
     els.tMinus.addEventListener("click", function () {
@@ -567,6 +621,24 @@
       state.showPicks = !state.showPicks;
       els.picksToggle.setAttribute("aria-pressed", String(state.showPicks));
       renderBracket();
+    });
+
+    els.anonToggle.addEventListener("click", function () {
+      if (!state.anonymous) {
+        var before = buildData();
+        if (before) {
+          before.rounds.forEach(function (roundMatches, r) {
+            roundMatches.forEach(function (m, i) {
+              if (m.winner) state.revealed[matchKey(r, i)] = true;
+            });
+          });
+        }
+      }
+      state.anonymous = !state.anonymous;
+      els.anonToggle.setAttribute("aria-pressed", String(state.anonymous));
+      saveState();
+      renderAll();
+      if (modalPin) renderModalComputed();
     });
 
     els.lockBtn.addEventListener("click", function () {

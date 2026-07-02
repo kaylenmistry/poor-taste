@@ -249,6 +249,7 @@ button, input, textarea {
 .bracket-toolbar {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-bottom: 6px;
 }
 .chip-btn {
@@ -315,6 +316,12 @@ button, input, textarea {
   border-radius: 8px; background: var(--accent); color: var(--accent-ink);
   font-size: 9px; font-weight: 600;
   display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+}
+.avatar-badge.hidden-badge { background: var(--muted); font-size: 12px; }
+.avatar-crown {
+  position: absolute; left: -4px; top: -6px;
+  font-size: 13px; line-height: 1;
+  filter: drop-shadow(0 1px 0 var(--card));
 }
 .champion-banner {
   position: absolute; left: 50%; top: 22%; transform: translate(-50%, -50%);
@@ -389,6 +396,13 @@ button, input, textarea {
 .vote-btn.cast { background: var(--accent); color: var(--accent-ink); }
 .vote-btn.remove { background: var(--bg); color: var(--ink); border: 0.5px solid var(--border); }
 .vote-locked-hint { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+
+.tie-panel {
+  border: 0.5px solid var(--danger); background: var(--danger-bg); border-radius: 10px;
+  padding: 10px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px;
+}
+.tie-panel .vote-locked-hint { color: var(--danger); font-weight: 600; }
+.tie-panel .vote-btn { font-size: 13px; padding: 8px; }
 
 .others-row {
   display: flex; align-items: center; justify-content: space-between;
