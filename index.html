@@ -54,6 +54,19 @@
       <button id="resetBtn" class="menu-item danger">Reset everything</button>
     </div>
 
+    <div class="anon-row">
+      <div class="anon-label">
+        <span>Anonymous voting</span>
+        <span class="info-wrap">
+          <button id="anonInfoBtn" class="info-btn" aria-label="What does anonymous voting do?" aria-expanded="false">?</button>
+          <div id="anonTooltip" class="tooltip-pop" hidden>Hides how many votes each wine has until every taster has voted on that match. Only the host can then lock in the result and reveal it to everyone at once &mdash; keeps a bit of suspense.</div>
+        </span>
+      </div>
+      <button id="anonToggle" class="switch" role="switch" aria-checked="false" aria-label="Anonymous voting">
+        <span class="switch-thumb"></span>
+      </button>
+    </div>
+
     <div id="manageBlock" class="host-only">
       <button id="wineToggle" class="pill-toggle" aria-expanded="false">
         <span id="wineToggleLabel">0 wines &middot; manage</span>
@@ -105,19 +118,13 @@
     <div id="statLine" class="stat-line"></div>
 
     <div class="bracket-toolbar">
-      <div class="toggle-with-info">
-        <button id="anonToggle" class="chip-btn" aria-pressed="false">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-          Anonymous
-        </button>
-        <button id="anonInfoBtn" class="info-btn" aria-label="What does anonymous voting do?" aria-expanded="false">?</button>
-        <div id="anonTooltip" class="tooltip-pop" hidden>Hides how many votes each wine has until every taster has voted on that match. Then anyone can tap <strong>Reveal result</strong> to show it together &mdash; keeps a bit of suspense.</div>
-      </div>
-      <button id="picksToggle" class="chip-btn" aria-pressed="false">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
-        Your picks
+      <button id="focusToggle" class="chip-btn" aria-pressed="true" hidden>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        Current match
       </button>
     </div>
+
+    <div id="focusPanel" class="focus-panel" hidden></div>
 
     <div id="bracketWrap" class="bracket-wrap">
       <svg id="svgLayer" viewBox="0 0 1000 1000" role="img" aria-label="Knockout bracket"></svg>
@@ -126,6 +133,8 @@
         <p>Add wines above to build your knockout ring.</p>
       </div>
     </div>
+
+    <div id="voterRow" class="voter-row"></div>
 
     <footer class="app-footer host-only">
       <p>Saved on this device only &middot; use <strong>Export backup</strong> to move it or back it up.</p>
@@ -136,25 +145,12 @@
   <div id="modal" class="modal" hidden>
     <div class="modal-handle"></div>
     <div class="modal-head">
-      <span class="modal-title">Wine details</span>
+      <span class="modal-title" id="modalTitle">Wine details</span>
       <button id="modalClose" class="icon-btn" aria-label="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
-    <div class="modal-body">
-      <div class="modal-photo-row">
-        <input type="file" accept="image/*" id="modalImgInput" hidden />
-        <button type="button" id="modalPhotoBtn" class="modal-photo-btn" aria-label="Change photo"></button>
-        <div class="modal-fields">
-          <input id="modalName" placeholder="Wine name" />
-          <input id="modalBy" placeholder="Brought by" />
-        </div>
-      </div>
-      <textarea id="modalDesc" placeholder="Tasting notes..."></textarea>
-      <div id="modalStatus" class="modal-status"></div>
-      <div id="modalVoteSection" class="modal-vote"></div>
-      <button id="modalRemove" class="text-danger-btn host-only">Remove this wine</button>
-    </div>
+    <div class="modal-body" id="modalBody"></div>
   </div>
 
   <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>

@@ -3,6 +3,7 @@
 
   var STORAGE_KEY = "poor-taste-state-v1";
   var VOTER_KEY = "poor-taste-voter-id";
+  var GUEST_NAME_KEY = "poor-taste-guest-name";
   var CX = 500, CY = 500, OUTER = 430;
   var LEVEL_PCT = [9.5, 8, 7, 6.5, 6];
 
@@ -12,10 +13,11 @@
     competitors: [],
     nextId: 1,
     votes: {},
-    showPicks: false,
     anonymous: false,
     revealed: {},
-    overrides: {}
+    overrides: {},
+    focusedMatch: null,
+    voters: {}
   };
 
   var urlParams = new URLSearchParams(location.search);
@@ -31,6 +33,8 @@
     return id;
   }
   var myVoterId = getOrCreateVoterId();
+  var spotlightVoterId = null;
+  var showFocusPanel = true;
 
   var state = isGuest ? JSON.parse(JSON.stringify(defaultState)) : loadState();
 
@@ -143,7 +147,7 @@
   }
   function totalVotesFor(r, i) { return getVote(r, i, "a").count + getVote(r, i, "b").count; }
   function isFullyVoted(r, i) { return totalVotesFor(r, i) >= state.tasters; }
-  function isRevealed(r, i) { return !state.anonymous || !!state.revealed[matchKey(r, i)]; }
+  function isRevealed(r, i) { return !!state.revealed[matchKey(r, i)]; }
   function clearMatchVotes(r, i) {
     delete state.votes[matchKey(r, i)];
     delete state.revealed[matchKey(r, i)];
@@ -260,18 +264,6 @@
   function sideAt(si, round) { return Math.floor(si / Math.pow(2, round)) % 2 === 0 ? "a" : "b"; }
   function idxAt(si, round) { return Math.floor(si / Math.pow(2, round + 1)); }
 
-  function isYourPick(si, k, roundsWon, R) {
-    if (k > 0) {
-      var idxPrev = idxAt(si, k - 1), sidePrev = sideAt(si, k - 1);
-      if (getVote(k - 1, idxPrev, sidePrev).yourVote) return true;
-    }
-    if (k === roundsWon && roundsWon < R) {
-      var idxCur = idxAt(si, roundsWon), sideCur = sideAt(si, roundsWon);
-      if (getVote(roundsWon, idxCur, sideCur).yourVote) return true;
-    }
-    return false;
-  }
-
   // ---------- networking (PeerJS) ----------
 
   var peer = null;
@@ -294,11 +286,14 @@
       votes: state.votes,
       anonymous: state.anonymous,
       revealed: state.revealed,
-      overrides: state.overrides
+      overrides: state.overrides,
+      focusedMatch: state.focusedMatch,
+      voters: state.voters
     };
   }
 
   function broadcastState() {
+    if (isGuest) return;
     var payload = { type: "state", state: publicState() };
     Object.keys(guestConns).forEach(function (k) {
       var g = guestConns[k];
@@ -322,15 +317,39 @@
     else if (action === "declare-b") state.overrides[mk] = "b";
   }
 
+  function doAction(action, round, idx, side) {
+    if (isGuest) {
+      sendGuestAction(action, round, idx, side);
+      return;
+    }
+    applyHostAction(action, round, idx, side, myVoterId);
+    saveState();
+    afterMutation();
+  }
+
+  function doManual(round, idx, side, count) {
+    if (isGuest) return;
+    setManualOthers(round, idx, side, count);
+    saveState();
+    afterMutation();
+  }
+
+  function afterMutation() {
+    renderAll();
+    refreshOpenCards();
+    broadcastState();
+  }
+
   function startSession() {
     if (typeof Peer === "undefined") { alert("Couldn't load the networking library. Check your connection and try again."); return; }
+    if (!state.voters[myVoterId]) state.voters[myVoterId] = "Host";
     peer = new Peer(shortId());
     peer.on("open", function (id) {
       var url = location.origin + location.pathname + "?join=" + id;
       els.startSessionBtn.hidden = true;
       els.sessionActive.hidden = false;
       els.qrCode.innerHTML = "";
-      new QRCode(els.qrCode, { text: url, width: 120, height: 120, correctLevel: QRCode.CorrectLevel.M });
+      new QRCode(els.qrCode, { text: url, width: 120, height: 120, colorDark: "#f5efe4", colorLight: "#2b2420", correctLevel: QRCode.CorrectLevel.M });
       els.copyLinkBtn.dataset.url = url;
       updateConnectedUI();
     });
@@ -353,14 +372,16 @@
     if (msg.type === "hello") {
       guestConns[conn.peer].voterId = msg.voterId;
       guestConns[conn.peer].name = msg.name || "Guest";
+      state.voters[msg.voterId] = msg.name || "Guest";
+      saveState();
       updateConnectedUI();
+      renderVoterRow();
       conn.send({ type: "state", state: publicState() });
+      broadcastState();
     } else if (msg.type === "action") {
       applyHostAction(msg.action, msg.round, msg.idx, msg.side, msg.voterId);
       saveState();
-      renderAll();
-      if (modalPin) renderModalComputed();
-      broadcastState();
+      afterMutation();
     }
   }
 
@@ -417,8 +438,10 @@
     state.anonymous = remote.anonymous;
     state.revealed = remote.revealed;
     state.overrides = remote.overrides;
+    state.focusedMatch = remote.focusedMatch;
+    state.voters = remote.voters || {};
     renderAll();
-    if (modalPin) renderModalComputed();
+    refreshOpenCards();
   }
 
   function sendGuestAction(action, round, idx, side) {
@@ -434,26 +457,28 @@
     [
       "svgLayer", "avatarLayer", "bracketWrap", "statLine", "chips", "wineToggle", "wineToggleLabel",
       "wineToggleIcon", "winePanel", "manageBlock", "lockedNote", "lockBtn", "lockIconOpen", "lockIconClosed",
-      "tVal", "tMinus", "tPlus", "picksToggle", "anonToggle", "anonInfoBtn", "anonTooltip", "modal", "backdrop", "modalName", "modalBy", "modalDesc",
-      "modalPhotoBtn", "modalImgInput", "modalStatus", "modalVoteSection", "modalRemove", "modalClose",
+      "tVal", "tMinus", "tPlus", "anonToggle", "anonInfoBtn", "anonTooltip", "modal", "backdrop",
+      "modalTitle", "modalBody", "modalClose",
       "wname", "wby", "wdesc", "wimg", "photoBtn", "addBtn", "menuBtn", "menuPanel", "exportBtn",
       "importBtn", "importInput", "resetBtn", "sessionBlock", "startSessionBtn", "sessionActive", "qrCode",
       "copyLinkBtn", "connectedCount", "stopSessionBtn", "connectionPill", "connectionDot", "connectionText",
-      "joinScreen", "mainApp", "joinName", "joinBtn", "joinStatus", "joinIntro"
+      "joinScreen", "mainApp", "joinName", "joinBtn", "joinStatus", "joinIntro", "focusToggle", "focusPanel", "voterRow"
     ].forEach(function (id) { els[id] = document.getElementById(id); });
   }
 
   var pendingImg = null;
   var formOpen = false;
+  var modalKind = null; // "edit" | "h2h" | null
   var modalCompId = null;
-  var modalPin = null;
+  var modalMatch = null; // {round, idx}
 
   function renderAll() {
     renderChips();
     renderBracket();
     renderLockUI();
-    els.picksToggle.setAttribute("aria-pressed", String(state.showPicks));
-    els.anonToggle.setAttribute("aria-pressed", String(state.anonymous));
+    renderFocusPanel();
+    renderVoterRow();
+    els.anonToggle.setAttribute("aria-checked", String(state.anonymous));
   }
 
   function renderChips() {
@@ -498,18 +523,18 @@
       (byes > 0 ? " · " + byes + " bye" + (byes !== 1 ? "s" : "") : "") +
       " · majority " + data.needed + " of " + state.tasters;
 
-    var lineOpacity = state.showPicks ? "0.15" : "1";
     var svgPaths = "", svgDots = "";
     for (var r = 0; r < data.R; r++) {
       for (var i = 0; i < data.rounds[r].length; i++) {
         svgPaths += '<path d="' + connectorPath(data, r, i) + '" fill="none" stroke="var(--line)" stroke-opacity="0.5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
         if (!data.rounds[r][i].winner) {
           var p = pt(data.ECHO_R[r + 1], data.matchAngle[r][i]);
-          var tied = data.rounds[r][i].a && data.rounds[r][i].b && data.rounds[r][i].a !== "BYE" && data.rounds[r][i].b !== "BYE" && isFullyVoted(r, i);
+          var tied = data.rounds[r][i].a && data.rounds[r][i].b && data.rounds[r][i].a !== "BYE" && data.rounds[r][i].b !== "BYE" && isRevealed(r, i);
           svgDots += '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="' + (tied ? 5 : 4) + '" fill="' + (tied ? "var(--danger)" : "var(--muted)") + '"/>';
         }
       }
     }
+    var lineOpacity = spotlightVoterId ? "0.15" : "1";
     els.svgLayer.innerHTML = '<g style="opacity:' + lineOpacity + ';transition:opacity .2s;">' + svgPaths + svgDots + "</g>";
 
     var avatars = "";
@@ -539,7 +564,7 @@
         } else if (isFrontier && st.eliminated) {
           faded = "filter:grayscale(0.75);";
         } else if (isFrontier && st.roundsWon < data.R && votable) {
-          var tiedHere = !pinnedMatch.winner && isFullyVoted(pinnedRound, pinnedIdx);
+          var tiedHere = !pinnedMatch.winner && isRevealed(pinnedRound, pinnedIdx);
           var vHere = getVote(pinnedRound, pinnedIdx, pinnedSide);
           if (tiedHere) border = "3px solid var(--danger)";
           else border = vHere.yourVote ? "3px solid var(--accent)" : "2px solid var(--border)";
@@ -547,18 +572,21 @@
         if (k < st.roundsWon) crown = '<span class="avatar-crown" title="Won this match">&#128081;</span>';
         if (votable) {
           var vBadge = getVote(pinnedRound, pinnedIdx, pinnedSide);
-          if (vBadge.count > 0) {
-            if (isRevealed(pinnedRound, pinnedIdx)) badge = '<span class="avatar-badge">' + vBadge.count + "</span>";
-            else badge = '<span class="avatar-badge hidden-badge" title="Votes hidden until revealed">&bull;</span>';
+          if (vBadge.count > 0 && isRevealed(pinnedRound, pinnedIdx)) {
+            badge = '<span class="avatar-badge">' + vBadge.count + "</span>";
           }
         }
-        if (state.showPicks) {
-          var pick = isYourPick(si, k, st.roundsWon, data.R);
+        if (spotlightVoterId && !isChamp) {
+          var mvHere = getMatchVotes(pinnedRound, pinnedIdx);
+          var canSee = !state.anonymous || isRevealed(pinnedRound, pinnedIdx);
+          var pick = canSee && mvHere.byVoter[spotlightVoterId] === pinnedSide;
           if (!pick) faded += "opacity:0.25;";
-          else if (!isChamp) border = "3px solid var(--accent)";
+          else border = "3px solid var(--accent)";
+        } else if (spotlightVoterId && isChamp) {
+          faded += "opacity:0.25;";
         }
         avatars +=
-          '<div class="avatar" data-comp="' + c.id + '" data-round="' + pinnedRound + '" data-match="' + pinnedIdx + '" data-side="' + pinnedSide + '" style="left:' + p[0] / 10 + "%;top:" + p[1] / 10 + "%;width:" + pct + "%;height:" + pct + "%;" + faded + '">' +
+          '<div class="avatar" data-comp="' + c.id + '" data-round="' + pinnedRound + '" data-match="' + pinnedIdx + '" style="left:' + p[0] / 10 + "%;top:" + p[1] / 10 + "%;width:" + pct + "%;height:" + pct + "%;" + faded + '">' +
           '<div class="avatar-inner" style="border:' + border + ';">' + avatarInnerHTML(c) + "</div>" +
           crown + badge + "</div>";
       }
@@ -571,12 +599,21 @@
     els.avatarLayer.innerHTML = avatars + center;
     Array.prototype.forEach.call(els.avatarLayer.querySelectorAll("[data-comp]"), function (el) {
       el.addEventListener("click", function () {
-        openModalFor(
-          Number(this.getAttribute("data-comp")),
-          Number(this.getAttribute("data-round")),
-          Number(this.getAttribute("data-match")),
-          this.getAttribute("data-side")
-        );
+        var round = Number(this.getAttribute("data-round"));
+        var idx = Number(this.getAttribute("data-match"));
+        var compId = Number(this.getAttribute("data-comp"));
+        if (state.locked) {
+          openHeadToHeadModal(round, idx);
+          if (!isGuest) {
+            state.focusedMatch = { round: round, idx: idx };
+            saveState();
+            showFocusPanel = true;
+            renderFocusPanel();
+            broadcastState();
+          }
+        } else {
+          openEditModal(compId);
+        }
       });
     });
   }
@@ -593,145 +630,254 @@
     if (!isGuest) els.sessionBlock.hidden = !state.locked;
   }
 
+  function renderVoterRow() {
+    var ids = Object.keys(state.voters || {});
+    if (!state.locked || ids.length === 0) { els.voterRow.innerHTML = ""; return; }
+    els.voterRow.innerHTML = ids.map(function (vid) {
+      var label = vid === myVoterId ? "You" : (state.voters[vid] || "Guest");
+      var pressed = spotlightVoterId === vid;
+      return '<button class="voter-pill" data-voter="' + esc(vid) + '" aria-pressed="' + pressed + '">' + esc(label) + "</button>";
+    }).join("");
+    Array.prototype.forEach.call(els.voterRow.querySelectorAll("[data-voter]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var vid = this.getAttribute("data-voter");
+        spotlightVoterId = spotlightVoterId === vid ? null : vid;
+        renderVoterRow();
+        renderBracket();
+      });
+    });
+  }
+
+  // ---------- head-to-head card (shared by modal + focus panel) ----------
+
+  function headToHeadHTML(round, idx) {
+    var data = buildData();
+    if (!data || !data.rounds[round] || !data.rounds[round][idx]) return '<div class="h2h-status">This match is no longer available.</div>';
+    var m = data.rounds[round][idx];
+
+    function sideHTML(side) {
+      var comp = side === "a" ? m.a : m.b;
+      if (comp === "BYE") return '<div class="h2h-side"><div class="h2h-placeholder">Bye</div></div>';
+      if (!comp) return '<div class="h2h-side"><div class="h2h-placeholder">TBD</div></div>';
+      var v = getVote(round, idx, side);
+      var locked = isRevealed(round, idx);
+      var body = "";
+      if (locked) {
+        if (v.yourVote) body += '<div class="h2h-count">You voted for this</div>';
+        body += '<div class="h2h-count">' + v.count + " vote" + (v.count !== 1 ? "s" : "") + "</div>";
+      } else {
+        body += v.yourVote
+          ? '<button class="vote-btn remove h2h-vote-btn" data-action="unvote" data-side="' + side + '">Voted</button>'
+          : '<button class="vote-btn cast h2h-vote-btn" data-action="vote" data-side="' + side + '">Vote</button>';
+        if (!state.anonymous) body += '<div class="h2h-count">' + v.count + " vote" + (v.count !== 1 ? "s" : "") + "</div>";
+        if (!isGuest) {
+          body += '<div class="others-row" style="margin-top:8px;"><span>Others</span><div class="stepper">' +
+            '<button class="icon-btn small" data-action="others-minus" data-side="' + side + '">&minus;</button>' +
+            "<span>" + v.manual + "</span>" +
+            '<button class="icon-btn small" data-action="others-plus" data-side="' + side + '">+</button>' +
+            "</div></div>";
+        }
+      }
+      var winnerBadge = (m.winner && m.winner !== "BYE" && m.winner.id === comp.id) ? '<div class="h2h-winner">Winner</div>' : "";
+      return '<div class="h2h-side">' +
+        '<div class="h2h-avatar">' + avatarInnerHTML(comp) + "</div>" +
+        '<div class="h2h-name">' + esc(comp.name) + "</div>" +
+        (comp.by ? '<div class="h2h-by">' + esc(comp.by) + "</div>" : "") +
+        body + winnerBadge +
+        "</div>";
+    }
+
+    var html = '<div class="h2h">' + sideHTML("a") + '<div class="h2h-vs">vs</div>' + sideHTML("b") + "</div>";
+
+    var bothReal = m.a && m.b && m.a !== "BYE" && m.b !== "BYE";
+    if (bothReal) {
+      if (!state.locked) {
+        html += '<div class="vote-locked-hint" style="justify-content:center;margin-top:10px;">Lock the configuration to start voting</div>';
+      } else {
+        var total = totalVotesFor(round, idx);
+        var fully = isFullyVoted(round, idx);
+        var revealed = isRevealed(round, idx);
+        var tied = revealed && !m.winner;
+
+        if (!revealed) {
+          if (state.anonymous) {
+            html += '<div class="h2h-status">' + total + " of " + state.tasters + " tasters have voted</div>";
+            if (!isGuest) {
+              html += fully
+                ? '<button class="vote-btn cast" data-action="reveal">Reveal result</button>'
+                : '<div class="vote-locked-hint" style="justify-content:center;">Votes stay hidden until everyone has voted</div>';
+            } else if (fully) {
+              html += '<div class="vote-locked-hint" style="justify-content:center;">Waiting for the host to reveal the result</div>';
+            }
+          } else {
+            html += '<div class="h2h-status">' + total + " vote" + (total !== 1 ? "s" : "") + " so far</div>";
+            if (!isGuest) {
+              html += '<button class="vote-btn cast" data-action="reveal">Lock in this round</button>';
+            } else {
+              html += '<div class="vote-locked-hint" style="justify-content:center;">You can change your vote until the host locks in this round</div>';
+            }
+          }
+        } else if (tied) {
+          if (isGuest) {
+            html += '<div class="tie-panel"><div class="vote-locked-hint" style="justify-content:center;">Tied — waiting for the host to resolve it</div></div>';
+          } else {
+            html += '<div class="tie-panel">' +
+              '<div class="vote-locked-hint" style="justify-content:center;">Tied — pick how to resolve it</div>' +
+              '<button class="vote-btn remove" data-action="revote">Revote</button>' +
+              '<button class="vote-btn cast" data-action="declare-a">Declare ' + esc(m.a.name) + " winner</button>" +
+              '<button class="vote-btn cast" data-action="declare-b">Declare ' + esc(m.b.name) + " winner</button>" +
+              "</div>";
+          }
+        } else {
+          html += '<div class="h2h-status h2h-winner">' + esc(m.winner.name) + " wins this round</div>";
+        }
+      }
+    } else if (m.a === "BYE" || m.b === "BYE") {
+      html += '<div class="h2h-status">Bye — advances automatically</div>';
+    } else {
+      html += '<div class="h2h-status">Waiting for both wines to be known</div>';
+    }
+
+    return html;
+  }
+
+  function wireHeadToHead(container, round, idx) {
+    function act(selector, handler) {
+      Array.prototype.forEach.call(container.querySelectorAll(selector), function (el) {
+        el.addEventListener("click", function () {
+          if (!state.locked) return;
+          handler(this.getAttribute("data-side"));
+        });
+      });
+    }
+    act('[data-action="vote"]', function (side) { doAction("vote", round, idx, side); });
+    act('[data-action="unvote"]', function (side) { doAction("unvote", round, idx, side); });
+    act('[data-action="others-plus"]', function (side) {
+      var v = getVote(round, idx, side);
+      doManual(round, idx, side, v.manual + 1);
+    });
+    act('[data-action="others-minus"]', function (side) {
+      var v = getVote(round, idx, side);
+      doManual(round, idx, side, v.manual - 1);
+    });
+    act('[data-action="reveal"]', function () { if (!isGuest) doAction("reveal", round, idx, null); });
+    act('[data-action="revote"]', function () { if (!isGuest) doAction("revote", round, idx, null); });
+    act('[data-action="declare-a"]', function () { if (!isGuest) doAction("declare-a", round, idx, null); });
+    act('[data-action="declare-b"]', function () { if (!isGuest) doAction("declare-b", round, idx, null); });
+  }
+
+  function renderFocusPanel() {
+    var has = !!state.focusedMatch;
+    els.focusToggle.hidden = !has;
+    if (has) els.focusToggle.setAttribute("aria-pressed", String(showFocusPanel));
+    if (!has || !showFocusPanel) {
+      els.focusPanel.hidden = true;
+      return;
+    }
+    els.focusPanel.hidden = false;
+    els.focusPanel.innerHTML = '<div class="focus-panel-label">Current head-to-head</div>' + headToHeadHTML(state.focusedMatch.round, state.focusedMatch.idx);
+    wireHeadToHead(els.focusPanel, state.focusedMatch.round, state.focusedMatch.idx);
+  }
+
+  function refreshOpenCards() {
+    if (modalKind === "h2h" && modalMatch && !els.modal.hidden) {
+      els.modalBody.innerHTML = headToHeadHTML(modalMatch.round, modalMatch.idx);
+      wireHeadToHead(els.modalBody, modalMatch.round, modalMatch.idx);
+    }
+    renderFocusPanel();
+  }
+
+  // ---------- edit card (pre-lock) ----------
+
+  function editCardHTML(c) {
+    var locked = state.locked;
+    return '<div class="modal-photo-row">' +
+      '<input type="file" accept="image/*" id="ecImgInput" hidden />' +
+      '<button type="button" id="ecPhotoBtn" class="modal-photo-btn" aria-label="Change photo">' + avatarInnerHTML(c) + "</button>" +
+      '<div class="modal-fields">' +
+      '<input id="ecName" placeholder="Wine name" value="' + esc(c.name) + '"' + (locked ? " disabled" : "") + " />" +
+      '<input id="ecBy" placeholder="Brought by" value="' + esc(c.by || "") + '"' + (locked ? " disabled" : "") + " />" +
+      "</div></div>" +
+      '<textarea id="ecDesc" placeholder="Tasting notes..."' + (locked ? " disabled" : "") + ">" + esc(c.desc || "") + "</textarea>" +
+      (locked ? "" : '<button id="ecRemove" class="text-danger-btn">Remove this wine</button>');
+  }
+
+  function wireEditCard(container, compId) {
+    function findComp() { return state.competitors.find(function (x) { return x.id === compId; }); }
+    var nameEl = container.querySelector("#ecName");
+    var byEl = container.querySelector("#ecBy");
+    var descEl = container.querySelector("#ecDesc");
+    var photoBtn = container.querySelector("#ecPhotoBtn");
+    var imgInput = container.querySelector("#ecImgInput");
+    var removeBtn = container.querySelector("#ecRemove");
+
+    if (nameEl) nameEl.addEventListener("input", function () {
+      if (state.locked) return;
+      var c = findComp(); if (c) { c.name = this.value; saveState(); renderAll(); }
+    });
+    if (byEl) byEl.addEventListener("input", function () {
+      if (state.locked) return;
+      var c = findComp(); if (c) { c.by = this.value; saveState(); renderAll(); }
+    });
+    if (descEl) descEl.addEventListener("input", function () {
+      if (state.locked) return;
+      var c = findComp(); if (c) { c.desc = this.value; saveState(); }
+    });
+    if (photoBtn) photoBtn.addEventListener("click", function () {
+      if (state.locked) return;
+      imgInput.click();
+    });
+    if (imgInput) imgInput.addEventListener("change", function (e) {
+      if (state.locked) return;
+      var file = e.target.files[0];
+      if (!file) return;
+      compressImage(file).then(function (dataUrl) {
+        var c = findComp();
+        if (c) { c.img = dataUrl; photoBtn.innerHTML = avatarInnerHTML(c); saveState(); renderAll(); }
+      });
+    });
+    if (removeBtn) removeBtn.addEventListener("click", function () {
+      if (state.locked) return;
+      state.competitors = state.competitors.filter(function (c) { return c.id !== compId; });
+      state.votes = {};
+      saveState();
+      closeModal();
+      renderAll();
+    });
+  }
+
   // ---------- modal ----------
 
-  function openModalFor(id, round, matchIdx, side) {
-    modalCompId = id;
-    modalPin = { round: round, matchIdx: matchIdx, side: side };
-    var c = state.competitors.find(function (x) { return x.id === id; });
+  function openEditModal(compId) {
+    var c = state.competitors.find(function (x) { return x.id === compId; });
     if (!c) return;
-    els.modalName.value = c.name;
-    els.modalBy.value = c.by || "";
-    els.modalDesc.value = c.desc || "";
-    els.modalName.disabled = els.modalBy.disabled = els.modalDesc.disabled = state.locked;
-    els.modalRemove.hidden = state.locked;
-    els.modalPhotoBtn.innerHTML = avatarInnerHTML(c);
+    modalKind = "edit";
+    modalCompId = compId;
+    modalMatch = null;
+    els.modalTitle.textContent = "Wine details";
+    els.modalBody.innerHTML = editCardHTML(c);
+    wireEditCard(els.modalBody, compId);
     els.modal.hidden = false;
     els.backdrop.hidden = false;
-    renderModalComputed();
+  }
+
+  function openHeadToHeadModal(round, idx) {
+    modalKind = "h2h";
+    modalMatch = { round: round, idx: idx };
+    modalCompId = null;
+    els.modalTitle.textContent = "Head to head";
+    els.modalBody.innerHTML = headToHeadHTML(round, idx);
+    wireHeadToHead(els.modalBody, round, idx);
+    els.modal.hidden = false;
+    els.backdrop.hidden = false;
   }
 
   function closeModal() {
     els.modal.hidden = true;
     els.backdrop.hidden = true;
+    modalKind = null;
     modalCompId = null;
-    modalPin = null;
-  }
-
-  function renderModalComputed() {
-    var c = state.competitors.find(function (x) { return x.id === modalCompId; });
-    if (!c || !modalPin) { els.modalStatus.innerHTML = ""; els.modalVoteSection.innerHTML = ""; return; }
-    var data = buildData();
-    var si = data.slotIndex[c.id];
-    if (si === undefined) { els.modalStatus.innerHTML = ""; els.modalVoteSection.innerHTML = ""; return; }
-
-    var round = modalPin.round, idx = modalPin.matchIdx, side = modalPin.side;
-    var m = data.rounds[round][idx];
-    var mine = side === "a" ? m.a : m.b;
-    var opponent = side === "a" ? m.b : m.a;
-
-    if (opponent === "BYE") {
-      els.modalStatus.textContent = "Bye — advanced automatically";
-      els.modalVoteSection.innerHTML = "";
-      return;
-    }
-    if (!opponent) {
-      els.modalStatus.textContent = "Waiting for an opponent";
-      els.modalVoteSection.innerHTML = "";
-      return;
-    }
-    if (m.winner && m.winner !== "BYE") {
-      if (m.winner.id === mine.id && round === data.R - 1) {
-        els.modalStatus.innerHTML = "\u{1F3C6} Champion";
-      } else if (m.winner.id === mine.id) {
-        els.modalStatus.textContent = "Won this match";
-      } else {
-        els.modalStatus.textContent = "Lost to " + m.winner.name;
-      }
-    } else {
-      els.modalStatus.textContent = "Facing " + opponent.name;
-    }
-
-    if (!state.locked) {
-      els.modalVoteSection.innerHTML = '<div class="vote-locked-hint">Lock the configuration to start voting</div>';
-      return;
-    }
-
-    var total = totalVotesFor(round, idx);
-    var fully = isFullyVoted(round, idx);
-    var revealed = isRevealed(round, idx);
-    var tied = fully && !m.winner;
-    var v = getVote(round, idx, side);
-    var html = "";
-
-    if (!revealed) {
-      var progressPct = Math.min(100, Math.round((total / state.tasters) * 100));
-      html += '<div style="font-size:12px;margin-bottom:4px;">' + total + " of " + state.tasters + " tasters have voted</div>" +
-        '<div class="vote-progress"><div class="vote-progress-fill" style="width:' + progressPct + '%;"></div></div>';
-      if (fully) {
-        html += '<button class="vote-btn cast" data-action="reveal">Reveal result</button>';
-      } else {
-        html += '<div class="vote-locked-hint">Votes stay hidden until everyone has voted</div>';
-      }
-    } else {
-      var pct = Math.min(100, Math.round((v.count / data.needed) * 100));
-      html += '<div style="font-size:12px;margin-bottom:4px;">' + Math.min(v.count, data.needed) + " of " + data.needed + " votes to advance</div>" +
-        '<div class="vote-progress"><div class="vote-progress-fill" style="width:' + pct + '%;"></div></div>';
-      if (tied) {
-        if (isGuest) {
-          html += '<div class="tie-panel"><div class="vote-locked-hint">Tied — waiting for the host to resolve it</div></div>';
-        } else {
-          html += '<div class="tie-panel">' +
-            '<div class="vote-locked-hint">Tied — pick how to resolve it</div>' +
-            '<button class="vote-btn remove" data-action="revote">Revote</button>' +
-            '<button class="vote-btn cast" data-action="declare-a">Declare ' + esc(m.a.name) + ' winner</button>' +
-            '<button class="vote-btn cast" data-action="declare-b">Declare ' + esc(m.b.name) + ' winner</button>' +
-            '</div>';
-        }
-      }
-    }
-
-    html += v.yourVote
-      ? '<button class="vote-btn remove" data-action="unvote">Remove your vote</button>'
-      : '<button class="vote-btn cast" data-action="vote">Vote for this wine</button>';
-    if (!isGuest) {
-      html +=
-        '<div class="others-row">' +
-        '<span>Other tasters</span>' +
-        '<div class="stepper">' +
-        '<button class="icon-btn small" data-action="others-minus" aria-label="Fewer other votes">&minus;</button>' +
-        '<span>' + v.manual + '</span>' +
-        '<button class="icon-btn small" data-action="others-plus" aria-label="More other votes">+</button>' +
-        '</div></div>';
-    }
-    els.modalVoteSection.innerHTML = html;
-
-    function act(sel, action) {
-      var el = els.modalVoteSection.querySelector(sel);
-      if (!el) return;
-      el.addEventListener("click", function () {
-        if (!state.locked) return;
-        if (isGuest) {
-          sendGuestAction(action, round, idx, side);
-          return;
-        }
-        if (action === "others-minus") setManualOthers(round, idx, side, v.manual - 1);
-        else if (action === "others-plus") setManualOthers(round, idx, side, v.manual + 1);
-        else applyHostAction(action, round, idx, side, myVoterId);
-        saveState();
-        renderAll();
-        renderModalComputed();
-        broadcastState();
-      });
-    }
-    act('[data-action="vote"]', "vote");
-    act('[data-action="unvote"]', "unvote");
-    act('[data-action="others-minus"]', "others-minus");
-    act('[data-action="others-plus"]', "others-plus");
-    act('[data-action="reveal"]', "reveal");
-    act('[data-action="revote"]', "revote");
-    act('[data-action="declare-a"]', "declare-a");
-    act('[data-action="declare-b"]', "declare-b");
+    modalMatch = null;
   }
 
   // ---------- events ----------
@@ -739,43 +885,6 @@
   function wireEvents() {
     els.modalClose.addEventListener("click", closeModal);
     els.backdrop.addEventListener("click", closeModal);
-
-    els.modalName.addEventListener("input", function () {
-      if (state.locked) return;
-      var c = state.competitors.find(function (x) { return x.id === modalCompId; });
-      if (c) { c.name = this.value; saveState(); renderAll(); }
-    });
-    els.modalBy.addEventListener("input", function () {
-      if (state.locked) return;
-      var c = state.competitors.find(function (x) { return x.id === modalCompId; });
-      if (c) { c.by = this.value; saveState(); renderAll(); }
-    });
-    els.modalDesc.addEventListener("input", function () {
-      if (state.locked) return;
-      var c = state.competitors.find(function (x) { return x.id === modalCompId; });
-      if (c) { c.desc = this.value; saveState(); }
-    });
-    els.modalPhotoBtn.addEventListener("click", function () {
-      if (state.locked) return;
-      els.modalImgInput.click();
-    });
-    els.modalImgInput.addEventListener("change", function (e) {
-      if (state.locked) return;
-      var file = e.target.files[0];
-      if (!file) return;
-      compressImage(file).then(function (dataUrl) {
-        var c = state.competitors.find(function (x) { return x.id === modalCompId; });
-        if (c) { c.img = dataUrl; els.modalPhotoBtn.innerHTML = avatarInnerHTML(c); saveState(); renderAll(); }
-      });
-    });
-    els.modalRemove.addEventListener("click", function () {
-      if (state.locked || modalCompId == null) return;
-      state.competitors = state.competitors.filter(function (c) { return c.id !== modalCompId; });
-      state.votes = {};
-      saveState();
-      closeModal();
-      renderAll();
-    });
 
     els.wineToggle.addEventListener("click", function () {
       if (state.locked) return;
@@ -826,12 +935,6 @@
       renderBracket();
     });
 
-    els.picksToggle.addEventListener("click", function () {
-      state.showPicks = !state.showPicks;
-      els.picksToggle.setAttribute("aria-pressed", String(state.showPicks));
-      renderBracket();
-    });
-
     els.anonInfoBtn.addEventListener("click", function (e) {
       e.stopPropagation();
       var open = els.anonTooltip.hidden;
@@ -860,14 +963,20 @@
       state.anonymous = !state.anonymous;
       saveState();
       renderAll();
-      if (modalPin) renderModalComputed();
+      refreshOpenCards();
       broadcastState();
+    });
+
+    els.focusToggle.addEventListener("click", function () {
+      showFocusPanel = !showFocusPanel;
+      renderFocusPanel();
     });
 
     els.lockBtn.addEventListener("click", function () {
       if (state.locked) {
         state.locked = false;
         state.votes = {};
+        state.focusedMatch = null;
         closeModal();
         stopSession();
       } else {
@@ -945,6 +1054,7 @@
     els.joinBtn.addEventListener("click", function () {
       var name = els.joinName.value.trim();
       if (!name) { els.joinStatus.textContent = "Enter your name to join."; els.joinStatus.className = "join-status error"; return; }
+      localStorage.setItem(GUEST_NAME_KEY, name);
       els.joinScreen.hidden = true;
       els.mainApp.hidden = false;
       setConnectionStatus("", "Connecting…");
@@ -960,9 +1070,17 @@
 
     if (isGuest) {
       document.body.classList.add("guest-mode");
-      els.mainApp.hidden = true;
-      els.joinScreen.hidden = false;
-      els.joinName.focus();
+      var savedName = localStorage.getItem(GUEST_NAME_KEY);
+      if (savedName) {
+        els.mainApp.hidden = false;
+        els.joinScreen.hidden = true;
+        setConnectionStatus("", "Connecting…");
+        joinSession(joinId, savedName);
+      } else {
+        els.mainApp.hidden = true;
+        els.joinScreen.hidden = false;
+        els.joinName.focus();
+      }
     } else {
       els.tVal.textContent = state.tasters;
       renderAll();
