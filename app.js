@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var STORAGE_KEY = "wine-knockout-state-v1";
+  var STORAGE_KEY = "poor-taste-state-v1";
   var CX = 500, CY = 500, OUTER = 430;
   var LEVEL_PCT = [9.5, 8, 7, 6.5, 6];
 
@@ -598,7 +598,7 @@
       var url = URL.createObjectURL(blob);
       var a = document.createElement("a");
       a.href = url;
-      a.download = "wine-knockout-backup.json";
+      a.download = "poor-taste-backup.json";
       a.click();
       URL.revokeObjectURL(url);
       els.menuPanel.hidden = true;
