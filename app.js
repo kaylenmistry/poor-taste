@@ -604,6 +604,7 @@
     els.modalBy.value = c.by || "";
     els.modalDesc.value = c.desc || "";
     els.modalName.disabled = els.modalBy.disabled = els.modalDesc.disabled = state.locked;
+    els.modalRemove.hidden = state.locked;
     els.modalPhotoBtn.innerHTML = avatarInnerHTML(c);
     els.modal.hidden = false;
     els.backdrop.hidden = false;
