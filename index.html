@@ -79,6 +79,19 @@
       </button>
     </div>
 
+    <div class="anon-row host-only">
+      <div class="anon-label">
+        <span>Full ranking</span>
+        <span class="info-wrap">
+          <button id="rankInfoBtn" class="info-btn" aria-label="What does full ranking do?" aria-expanded="false">?</button>
+          <div id="rankTooltip" class="tooltip-pop" hidden>Ranks every wine from 1st to last, not just the podium. Wines that reach a later round place higher; ties within a round break on total votes, then last-round votes, then a quick head-to-head. Unlocks the end-of-night big reveal.</div>
+        </span>
+      </div>
+      <button id="rankingToggle" class="switch" role="switch" aria-checked="false" aria-label="Full ranking">
+        <span class="switch-thumb"></span>
+      </button>
+    </div>
+
     <div id="manageBlock" class="host-only">
       <button id="wineToggle" class="pill-toggle" aria-expanded="false">
         <span id="wineToggleLabel">0 wines &middot; manage</span>
@@ -96,6 +109,7 @@
             <input id="wname" type="text" placeholder="Wine name" />
           </div>
           <input id="wby" type="text" placeholder="Brought by (optional)" />
+          <input id="wsecret" type="text" placeholder="Secret name — revealed at the end (optional)" />
           <textarea id="wdesc" placeholder="Tasting notes (optional)"></textarea>
           <button id="addBtn" class="primary-btn" type="button">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
@@ -150,6 +164,8 @@
 
     <div id="podium" class="podium" hidden></div>
 
+    <div id="rankingPanel" class="ranking-panel" hidden></div>
+
     <div id="bracketWrap" class="bracket-wrap">
       <svg id="svgLayer" viewBox="0 0 1000 1000" role="img" aria-label="Knockout bracket"></svg>
       <div id="avatarLayer"></div>
@@ -164,6 +180,8 @@
       <p>Saved on this device only &middot; use <strong>Export backup</strong> to move it or back it up.</p>
     </footer>
   </div>
+
+  <div id="toast" class="toast" hidden></div>
 
   <div id="backdrop" class="backdrop" hidden></div>
   <div id="modal" class="modal" hidden>
