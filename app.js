@@ -18,7 +18,12 @@
     revealed: {},
     overrides: {},
     focusedMatch: null,
-    voters: {}
+    voters: {},
+    fullRanking: false,
+    rankVotes: {},
+    secretsRevealed: {},
+    revealedSecrets: {},
+    reveal: { active: false, shown: 0 }
   };
 
   var urlParams = new URLSearchParams(location.search);
@@ -79,6 +84,17 @@
   function avatarInnerHTML(c) {
     if (c.img) return '<img src="' + c.img + '" alt="" />';
     return '<div class="avatar-initials">' + esc(initials(c.name)) + "</div>";
+  }
+
+  // The secret name only becomes readable once the host reveals it. The host
+  // reads it straight off the competitor; guests never receive an unrevealed
+  // secret in the payload, so they read from the revealedSecrets map instead.
+  function secretTextFor(c) {
+    if (isGuest) return (state.revealedSecrets && state.revealedSecrets[c.id]) || null;
+    return (state.secretsRevealed && state.secretsRevealed[c.id] && c.secret) ? c.secret : null;
+  }
+  function hostHasSecret(c) {
+    return !isGuest && !!(c.secret && c.secret.trim());
   }
 
   function withTransition(fn) {
@@ -168,6 +184,49 @@
     state.revealed = {};
     state.overrides = {};
     state.focusedMatch = null;
+    state.rankVotes = {};
+    state.secretsRevealed = {};
+    state.reveal = { active: false, shown: 0 };
+  }
+
+  // ---------- rankoff votes (final-ranking tiebreakers) ----------
+  // A rankoff is a "pick one of N" vote used to break a tie between wines that
+  // finished in the same round. Stored separately from head-to-head votes
+  // because each voter picks a competitor id (not an a/b side). Reveal state
+  // reuses state.revealed[key] with a synthetic "K-…" key.
+
+  function getRankVotes(key) {
+    return state.rankVotes[key] || { byVoter: {}, manual: {} };
+  }
+  function rankCountFor(key, compId) {
+    var v = getRankVotes(key);
+    var n = v.manual[compId] || 0;
+    Object.keys(v.byVoter).forEach(function (vid) { if (String(v.byVoter[vid]) === String(compId)) n++; });
+    return n;
+  }
+  function rankMyVote(key) {
+    var v = getRankVotes(key);
+    return v.byVoter[myVoterId];
+  }
+  function rankTotalVotes(key) {
+    var v = getRankVotes(key);
+    var n = Object.keys(v.byVoter).length;
+    Object.keys(v.manual).forEach(function (cid) { n += v.manual[cid] || 0; });
+    return n;
+  }
+  function castRankVote(key, compId, voterId) {
+    var v = state.rankVotes[key] || { byVoter: {}, manual: {} };
+    v.byVoter[voterId] = compId;
+    state.rankVotes[key] = v;
+  }
+  function removeRankVote(key, voterId) {
+    var v = state.rankVotes[key];
+    if (v && v.byVoter) delete v.byVoter[voterId];
+  }
+  function setRankManual(key, compId, count) {
+    var v = state.rankVotes[key] || { byVoter: {}, manual: {} };
+    v.manual[compId] = Math.max(0, count);
+    state.rankVotes[key] = v;
   }
 
   // ---------- bracket math ----------
@@ -308,6 +367,116 @@
   function sideAt(si, round) { return Math.floor(si / Math.pow(2, round)) % 2 === 0 ? "a" : "b"; }
   function idxAt(si, round) { return Math.floor(si / Math.pow(2, round + 1)); }
 
+  // ---------- full ranking ----------
+  // Turns the finished bracket into a 1..N ordering of every wine. Wines that
+  // reached a deeper round always outrank shallower ones; within a round we use
+  // the user's tiebreak chain: total votes received → votes in the losing round
+  // → a host-run rankoff (head-to-head, or multi-way head-to-head for 3+).
+  // The two semifinal losers are ordered by the existing 3rd-place playoff.
+
+  function rankTierLabel(tier, R) {
+    var fromTop = R - tier;
+    if (fromTop <= 0) return "Champion";
+    if (fromTop === 1) return "Runner-up";
+    if (fromTop === 2) return "Semifinalist";
+    if (fromTop === 3) return "Quarterfinalist";
+    return "Last " + Math.pow(2, fromTop);
+  }
+
+  // A rankoff's key is derived from *who* is tied (sorted ids), so it stays
+  // stable regardless of how other tiers happen to be ordered, and both host
+  // and guests compute the same key from the broadcast state.
+  function rankoffKey(tier, members) {
+    return "K-" + tier + "-" + members.map(function (m) { return m.comp.id; })
+      .sort(function (a, b) { return a - b; }).join(".");
+  }
+
+  function computeRanking(data) {
+    if (!data) return null;
+    var R = data.R;
+    var info = [];
+    state.competitors.forEach(function (c, seedIdx) {
+      var si = data.slotIndex[c.id];
+      if (si === undefined) return;
+      var tier = statusFor(data, si, c.id).roundsWon;
+      var isChampion = tier >= R;
+      var total = 0, lastRound = 0;
+      var maxRound = isChampion ? R - 1 : tier;
+      for (var r = 0; r <= maxRound && r < R; r++) {
+        var idx = idxAt(si, r), side = sideAt(si, r);
+        var m = data.rounds[r][idx];
+        if (m && m.a && m.b && m.a !== "BYE" && m.b !== "BYE") {
+          var cnt = getVote(r, idx, side).count;
+          total += cnt;
+          if (!isChampion && r === tier) lastRound = cnt;
+        }
+      }
+      info.push({ comp: c, tier: tier, isChampion: isChampion, total: total, lastRound: lastRound, seedIdx: seedIdx });
+    });
+
+    var hasChampion = info.some(function (it) { return it.isChampion; });
+
+    var tiers = {};
+    info.forEach(function (it) { (tiers[it.tier] = tiers[it.tier] || []).push(it); });
+    var tierKeys = Object.keys(tiers).map(Number).sort(function (a, b) { return b - a; });
+
+    var order = [];
+    var pending = [];
+
+    tierKeys.forEach(function (tk) {
+      var group = tiers[tk];
+      var rows = [];
+      var usePlayoff = tk === R - 2 && data.thirdPlace && data.thirdPlace.a && data.thirdPlace.b && group.length === 2;
+
+      if (usePlayoff) {
+        var tp = data.thirdPlace;
+        if (tp.winner && tp.winner !== "BYE") {
+          var wid = tp.winner.id;
+          group.sort(function (a, b) { return (a.comp.id === wid ? 0 : 1) - (b.comp.id === wid ? 0 : 1) || a.seedIdx - b.seedIdx; });
+          group.forEach(function (it) { rows.push({ it: it, provisional: false }); });
+        } else {
+          group.sort(function (a, b) { return a.seedIdx - b.seedIdx; });
+          group.forEach(function (it) { rows.push({ it: it, provisional: true }); });
+          pending.push({ type: "playoff" });
+        }
+      } else {
+        var sorted = group.slice().sort(function (a, b) {
+          return (b.total - a.total) || (b.lastRound - a.lastRound) || (a.seedIdx - b.seedIdx);
+        });
+        var i = 0;
+        while (i < sorted.length) {
+          var j = i + 1;
+          while (j < sorted.length && sorted[j].total === sorted[i].total && sorted[j].lastRound === sorted[i].lastRound) j++;
+          var sub = sorted.slice(i, j);
+          if (sub.length === 1) {
+            rows.push({ it: sub[0], provisional: false });
+          } else {
+            var key = rankoffKey(tk, sub);
+            if (state.revealed[key]) {
+              sub.sort(function (a, b) { return (rankCountFor(key, b.comp.id) - rankCountFor(key, a.comp.id)) || (a.seedIdx - b.seedIdx); });
+              sub.forEach(function (it) { rows.push({ it: it, provisional: false }); });
+            } else {
+              sub.forEach(function (it) { rows.push({ it: it, provisional: true }); });
+              pending.push({ type: "rankoff", key: key, group: sub.map(function (m) { return m.comp; }) });
+            }
+          }
+          i = j;
+        }
+      }
+
+      rows.forEach(function (row) {
+        order.push({
+          comp: row.it.comp, tier: tk, tierLabel: rankTierLabel(tk, R),
+          isChampion: row.it.isChampion, provisional: row.provisional,
+          total: row.it.total, lastRound: row.it.lastRound
+        });
+      });
+    });
+
+    order.forEach(function (o, i) { o.rank = i + 1; });
+    return { order: order, pending: pending, resolved: pending.length === 0, hasChampion: hasChampion, count: order.length };
+  }
+
   // ---------- networking (PeerJS) ----------
 
   var peer = null;
@@ -332,16 +501,34 @@
   }
 
   function publicState() {
+    // Strip secret names from the broadcast — only revealed ones are sent, as
+    // values, so a guest can't read unrevealed secrets out of the payload.
+    var safeComps = state.competitors.map(function (c) {
+      var copy = {};
+      Object.keys(c).forEach(function (k) { if (k !== "secret") copy[k] = c[k]; });
+      return copy;
+    });
+    var revealedSecrets = {};
+    Object.keys(state.secretsRevealed || {}).forEach(function (id) {
+      if (!state.secretsRevealed[id]) return;
+      var c = state.competitors.find(function (x) { return String(x.id) === String(id); });
+      if (c && c.secret) revealedSecrets[id] = c.secret;
+    });
     return {
       tasters: state.tasters,
       locked: state.locked,
-      competitors: state.competitors,
+      competitors: safeComps,
       votes: state.votes,
       anonymous: state.anonymous,
       revealed: state.revealed,
       overrides: state.overrides,
       focusedMatch: state.focusedMatch,
-      voters: state.voters
+      voters: state.voters,
+      fullRanking: state.fullRanking,
+      rankVotes: state.rankVotes,
+      secretsRevealed: state.secretsRevealed,
+      revealedSecrets: revealedSecrets,
+      reveal: state.reveal
     };
   }
 
@@ -383,6 +570,32 @@
   function doManual(round, idx, side, count) {
     if (isGuest) return;
     setManualOthers(round, idx, side, count);
+    saveState();
+    afterMutation();
+  }
+
+  function applyRankAction(action, key, compId, voterId) {
+    if (action === "rankvote") castRankVote(key, compId, voterId);
+    else if (action === "rankunvote") removeRankVote(key, voterId);
+    else if (action === "rankreveal") state.revealed[key] = true;
+    else if (action === "rankrevote") { delete state.rankVotes[key]; delete state.revealed[key]; }
+  }
+
+  function doRankAction(action, key, compId) {
+    if (isGuest) {
+      if (hostConn && hostConn.open) {
+        hostConn.send({ type: "rankaction", action: action, key: key, compId: compId, voterId: myVoterId });
+      }
+      return;
+    }
+    applyRankAction(action, key, compId, myVoterId);
+    saveState();
+    afterMutation();
+  }
+
+  function doRankManual(key, compId, count) {
+    if (isGuest) return;
+    setRankManual(key, compId, count);
     saveState();
     afterMutation();
   }
@@ -446,6 +659,10 @@
       applyHostAction(msg.action, msg.round, msg.idx, msg.side, msg.voterId);
       saveState();
       afterMutation();
+    } else if (msg.type === "rankaction") {
+      applyRankAction(msg.action, msg.key, msg.compId, msg.voterId);
+      saveState();
+      afterMutation();
     }
   }
 
@@ -493,6 +710,7 @@
     });
     hostConn.on("data", function (msg) {
       if (msg.type === "state") applyRemoteState(msg.state);
+      else if (msg.type === "whisper") showToast(msg.text);
     });
     hostConn.on("close", function () {
       setConnectionStatus("off", "Disconnected — reconnecting…");
@@ -510,6 +728,11 @@
     state.overrides = remote.overrides;
     state.focusedMatch = remote.focusedMatch;
     state.voters = remote.voters || {};
+    state.fullRanking = !!remote.fullRanking;
+    state.rankVotes = remote.rankVotes || {};
+    state.secretsRevealed = remote.secretsRevealed || {};
+    state.revealedSecrets = remote.revealedSecrets || {};
+    state.reveal = remote.reveal || { active: false, shown: 0 };
     renderAll();
     refreshOpenCards();
   }
@@ -529,13 +752,14 @@
       "wineToggleIcon", "winePanel", "manageBlock", "lockedNote", "lockBtn", "lockIconOpen", "lockIconClosed",
       "tVal", "tMinus", "tPlus", "anonToggle", "anonInfoBtn", "anonTooltip", "modal", "backdrop",
       "modalTitle", "modalBody", "modalClose", "modalBack",
-      "wname", "wby", "wdesc", "wimg", "photoBtn", "addBtn", "menuBtn", "menuPanel", "exportBtn",
+      "wname", "wby", "wsecret", "wdesc", "wimg", "photoBtn", "addBtn", "menuBtn", "menuPanel", "exportBtn",
       "importBtn", "importInput", "resetBtn", "sessionBlock", "startSessionBtn", "sessionActive", "qrCode",
       "copyLinkBtn", "connectedCount", "stopSessionBtn", "connectionPill", "connectionDot", "connectionText",
       "roomBadge", "connectionHomeBtn", "joinHomeBtn",
       "joinScreen", "mainApp", "joinName", "joinBtn", "joinStatus", "joinIntro", "focusToggle", "focusPanel", "voterRow",
       "sessionDetailsToggle", "sessionDetails", "joinCode", "joinByCodeRow", "joinByCodeBtn", "joinByCodeForm",
-      "joinCodeInput", "joinByCodeSubmit", "podium", "thirdPlacePanel"
+      "joinCodeInput", "joinByCodeSubmit", "podium", "thirdPlacePanel",
+      "rankingPanel", "rankingToggle", "rankInfoBtn", "rankTooltip", "toast"
     ].forEach(function (id) { els[id] = document.getElementById(id); });
   }
 
@@ -552,8 +776,10 @@
     renderLockUI();
     renderFocusPanel();
     renderThirdPlacePanel();
+    renderRankingPanel();
     renderVoterRow();
     els.anonToggle.setAttribute("aria-checked", String(state.anonymous));
+    if (els.rankingToggle) els.rankingToggle.setAttribute("aria-checked", String(state.fullRanking));
   }
 
   function moveCompetitor(id, dir) {
@@ -727,13 +953,32 @@
     if (!isGuest) els.sessionBlock.hidden = !state.locked;
   }
 
+  function connectedVoterIds() {
+    var set = {};
+    if (isGuest) return set;
+    Object.keys(guestConns).forEach(function (k) {
+      var g = guestConns[k];
+      if (g.conn && g.conn.open && g.voterId) set[g.voterId] = true;
+    });
+    return set;
+  }
+
   function renderVoterRow() {
     var ids = Object.keys(state.voters || {});
     if (!state.locked || ids.length === 0) { els.voterRow.innerHTML = ""; return; }
+    var connected = connectedVoterIds();
     els.voterRow.innerHTML = ids.map(function (vid) {
       var label = vid === myVoterId ? "You" : (state.voters[vid] || "Guest");
       var pressed = spotlightVoterId === vid;
-      return '<button class="voter-pill" data-voter="' + esc(vid) + '" aria-pressed="' + pressed + '">' + esc(label) + "</button>";
+      var pill = '<button class="voter-pill" data-voter="' + esc(vid) + '" aria-pressed="' + pressed + '">' + esc(label) + "</button>";
+      // Host can whisper to any connected guest (not itself).
+      if (!isGuest && vid !== myVoterId && connected[vid]) {
+        return '<span class="voter-pill-group">' + pill +
+          '<button class="voter-whisper" data-whisper="' + esc(vid) + '" aria-label="Whisper to ' + esc(label) + '" title="Whisper to ' + esc(label) + '">' +
+          '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/></svg>' +
+          "</button></span>";
+      }
+      return pill;
     }).join("");
     Array.prototype.forEach.call(els.voterRow.querySelectorAll("[data-voter]"), function (btn) {
       btn.addEventListener("click", function () {
@@ -742,6 +987,9 @@
         renderVoterRow();
         renderBracket();
       });
+    });
+    Array.prototype.forEach.call(els.voterRow.querySelectorAll("[data-whisper]"), function (btn) {
+      btn.addEventListener("click", function () { openWhisperModal(this.getAttribute("data-whisper")); });
     });
   }
 
@@ -898,6 +1146,84 @@
     });
   }
 
+  // ---------- rankoff card (tie-break vote for the final ranking) ----------
+
+  function rankoffHTML(key, group) {
+    var revealed = !!state.revealed[key];
+    var total = rankTotalVotes(key);
+    var mine = rankMyVote(key);
+    var sides = group.map(function (c) {
+      var picked = String(mine) === String(c.id);
+      var cnt = rankCountFor(key, c.id);
+      var body = "";
+      if (revealed) {
+        if (picked) body += '<div class="h2h-count">You voted for this</div>';
+        body += '<div class="h2h-count">' + cnt + " vote" + (cnt !== 1 ? "s" : "") + "</div>";
+      } else {
+        body += picked
+          ? '<button class="vote-btn remove rankoff-vote-btn" data-rank-action="rankunvote" data-comp="' + c.id + '">Voted</button>'
+          : '<button class="vote-btn cast rankoff-vote-btn" data-rank-action="rankvote" data-comp="' + c.id + '">Vote</button>';
+        if (!state.anonymous) body += '<div class="h2h-count">' + cnt + " vote" + (cnt !== 1 ? "s" : "") + "</div>";
+        if (!isGuest) {
+          body += '<div class="others-row" style="margin-top:6px;justify-content:center;gap:8px;"><span>Others</span><div class="stepper">' +
+            '<button class="icon-btn small" data-rank-manual="minus" data-comp="' + c.id + '">&minus;</button>' +
+            "<span>" + (getRankVotes(key).manual[c.id] || 0) + "</span>" +
+            '<button class="icon-btn small" data-rank-manual="plus" data-comp="' + c.id + '">+</button>' +
+            "</div></div>";
+        }
+      }
+      return '<div class="rankoff-side">' +
+        '<div class="rankoff-avatar">' + avatarInnerHTML(c) + "</div>" +
+        '<div class="rankoff-name">' + esc(c.name) + "</div>" +
+        body + "</div>";
+    }).join("");
+
+    var html = '<div class="rankoff-grid">' + sides + "</div>";
+
+    if (!revealed) {
+      if (state.anonymous) {
+        html += '<div class="h2h-status">' + total + " of " + state.tasters + " tasters have voted</div>";
+        if (!isGuest) {
+          html += total >= state.tasters
+            ? '<button class="vote-btn cast" data-rank-action="rankreveal">Reveal order</button>'
+            : '<div class="vote-locked-hint" style="justify-content:center;">Votes stay hidden until everyone has voted</div>';
+        } else if (total >= state.tasters) {
+          html += '<div class="vote-locked-hint" style="justify-content:center;">Waiting for the host to reveal the order</div>';
+        }
+      } else {
+        html += '<div class="h2h-status">' + total + " vote" + (total !== 1 ? "s" : "") + " so far</div>";
+        html += isGuest
+          ? '<div class="vote-locked-hint" style="justify-content:center;">You can change your vote until the host reveals the order</div>'
+          : '<button class="vote-btn cast" data-rank-action="rankreveal">Reveal order</button>';
+      }
+    } else {
+      var ordered = group.slice().sort(function (a, b) { return rankCountFor(key, b.id) - rankCountFor(key, a.id); });
+      html += '<div class="h2h-status h2h-winner">' + esc(ordered[0].name) + " ranks highest</div>";
+      if (!isGuest) html += '<button class="vote-btn remove" data-rank-action="rankrevote">Redo this rankoff</button>';
+    }
+    return html;
+  }
+
+  function wireRankoff(container, key) {
+    Array.prototype.forEach.call(container.querySelectorAll("[data-rank-action]"), function (el) {
+      el.addEventListener("click", function () {
+        if (!state.locked) return;
+        var action = this.getAttribute("data-rank-action");
+        if ((action === "rankreveal" || action === "rankrevote") && isGuest) return;
+        var compId = this.hasAttribute("data-comp") ? Number(this.getAttribute("data-comp")) : null;
+        doRankAction(action, key, compId);
+      });
+    });
+    Array.prototype.forEach.call(container.querySelectorAll("[data-rank-manual]"), function (el) {
+      el.addEventListener("click", function () {
+        if (isGuest) return;
+        var compId = Number(this.getAttribute("data-comp"));
+        var cur = getRankVotes(key).manual[compId] || 0;
+        doRankManual(key, compId, cur + (this.getAttribute("data-rank-manual") === "plus" ? 1 : -1));
+      });
+    });
+  }
+
   function renderFocusPanel() {
     var has = !!state.focusedMatch;
     els.focusToggle.hidden = !has;
@@ -918,6 +1244,7 @@
     }
     renderFocusPanel();
     renderThirdPlacePanel();
+    renderRankingPanel();
   }
 
   function renderThirdPlacePanel() {
@@ -931,17 +1258,25 @@
     wireHeadToHead(els.thirdPlacePanel, "T", 0);
   }
 
+  function revealActive() { return state.fullRanking && state.reveal && state.reveal.active; }
+
   function renderPodium(data, championComp) {
-    if (!championComp) { els.podium.hidden = true; return; }
+    // During the big reveal the podium would spoil the top three, so hide it.
+    if (!championComp || revealActive()) { els.podium.hidden = true; return; }
     var runnerUp = data.runnerUp;
     var third = data.thirdPlace && data.thirdPlace.winner;
     els.podium.hidden = false;
     function slot(rank, comp, label) {
       if (!comp) return '<div class="podium-slot podium-empty podium-rank-' + rank + '"><div class="podium-place">' + label + '</div><div class="podium-tbd">TBD</div></div>';
+      var secret = secretTextFor(comp);
+      var extra = secret
+        ? '<span class="secret-chip">🎭 ' + esc(secret) + "</span>"
+        : (hostHasSecret(comp) ? '<button class="secret-reveal-btn" data-reveal-secret="' + comp.id + '">Reveal secret</button>' : "");
       return '<div class="podium-slot podium-rank-' + rank + '">' +
         '<div class="podium-avatar">' + avatarInnerHTML(comp) + "</div>" +
         '<div class="podium-place">' + label + '</div>' +
         '<div class="podium-name">' + esc(comp.name) + "</div>" +
+        extra +
         "</div>";
     }
     els.podium.innerHTML =
@@ -951,6 +1286,125 @@
       slot(1, championComp, "1st") +
       slot(3, third, "3rd") +
       "</div>";
+    Array.prototype.forEach.call(els.podium.querySelectorAll("[data-reveal-secret]"), function (el) {
+      el.addEventListener("click", function () { revealSecret(Number(this.getAttribute("data-reveal-secret"))); });
+    });
+  }
+
+  // ---------- final ranking panel + big reveal ----------
+
+  function rankingRowHTML(o, hiddenByReveal) {
+    var c = o.comp;
+    var rankNum = '<span class="ranking-rank">' + o.rank + "</span>";
+    if (hiddenByReveal) {
+      return '<li class="ranking-row hidden-row">' + rankNum +
+        '<span class="ranking-avatar mystery">?</span>' +
+        '<span class="ranking-main"><span class="ranking-name muted">To be revealed…</span></span></li>';
+    }
+    var secret = secretTextFor(c);
+    var prov = o.provisional ? '<span class="ranking-tie" title="Tie not yet resolved">tie</span>' : "";
+    var secretChip = secret ? '<span class="secret-chip">🎭 ' + esc(secret) + "</span>" : "";
+    var revealBtn = (hostHasSecret(c) && !secret)
+      ? '<button class="secret-reveal-btn" data-reveal-secret="' + c.id + '">Reveal secret</button>' : "";
+    var sub = esc(o.tierLabel) + (c.by ? " · " + esc(c.by) : "");
+    return '<li class="ranking-row' + (o.isChampion ? " champ" : "") + '">' + rankNum +
+      '<span class="ranking-avatar">' + avatarInnerHTML(c) + "</span>" +
+      '<span class="ranking-main">' +
+        '<span class="ranking-name">' + esc(c.name) + prov + "</span>" +
+        '<span class="ranking-sub">' + sub + "</span>" +
+        secretChip +
+      "</span>" + revealBtn + "</li>";
+  }
+
+  function renderRankingPanel() {
+    var panel = els.rankingPanel;
+    if (!panel) return;
+    if (!state.fullRanking) { panel.hidden = true; return; }
+    var data = buildData();
+    var ranking = data ? computeRanking(data) : null;
+    if (!ranking || !ranking.hasChampion) { panel.hidden = true; return; }
+    panel.hidden = false;
+
+    var reveal = state.reveal || { active: false, shown: 0 };
+    var N = ranking.order.length;
+
+    var html = '<div class="focus-panel-label">Final ranking</div>';
+    html += '<ol class="ranking-list">';
+    ranking.order.forEach(function (o) {
+      var hiddenByReveal = reveal.active && o.rank <= (N - reveal.shown);
+      html += rankingRowHTML(o, hiddenByReveal);
+    });
+    html += "</ol>";
+
+    var rankoffs = ranking.pending.filter(function (p) { return p.type === "rankoff"; });
+    var playoffPending = ranking.pending.some(function (p) { return p.type === "playoff"; });
+    if (playoffPending) {
+      html += '<div class="ranking-note">Settle the 3rd-place play-off above to lock in those positions.</div>';
+    }
+    rankoffs.forEach(function (p) {
+      html += '<div class="rankoff-card" data-rankoff="' + esc(p.key) + '">' +
+        '<div class="rankoff-label">Tie-break · ' + (p.group.length > 2 ? p.group.length + "-way" : "head-to-head") + "</div>" +
+        rankoffHTML(p.key, p.group) + "</div>";
+    });
+
+    if (!isGuest) {
+      if (!ranking.resolved) {
+        html += '<div class="ranking-note">Resolve the tie-break' + (ranking.pending.length !== 1 ? "s" : "") + " to unlock the big reveal.</div>";
+      } else if (!reveal.active) {
+        html += '<button class="vote-btn cast reveal-btn" data-reveal="start">Start the big reveal</button>';
+      } else {
+        html += '<div class="reveal-controls">' +
+          '<div class="reveal-progress">' + reveal.shown + " of " + N + " revealed</div>";
+        html += reveal.shown < N
+          ? '<button class="vote-btn cast" data-reveal="next">Reveal next place</button>'
+          : '<div class="h2h-status h2h-winner">That\'s the lot — glasses up! 🥂</div>';
+        html += '<div class="reveal-sub-actions">' +
+          (reveal.shown < N ? '<button class="text-link-btn" data-reveal="all">Reveal all</button>' : "") +
+          '<button class="text-link-btn" data-reveal="end">End reveal</button>' +
+          "</div></div>";
+      }
+    } else if (reveal.active) {
+      html += '<div class="reveal-progress">' + reveal.shown + " of " + N + " revealed</div>";
+    }
+
+    panel.innerHTML = html;
+
+    rankoffs.forEach(function (p) {
+      var card = panel.querySelector('[data-rankoff="' + p.key + '"]');
+      if (card) wireRankoff(card, p.key);
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-reveal]"), function (el) {
+      el.addEventListener("click", function () { handleRevealAction(this.getAttribute("data-reveal")); });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-reveal-secret]"), function (el) {
+      el.addEventListener("click", function () { revealSecret(Number(this.getAttribute("data-reveal-secret"))); });
+    });
+  }
+
+  function handleRevealAction(action) {
+    if (isGuest) return;
+    var data = buildData();
+    var ranking = data ? computeRanking(data) : null;
+    if (!ranking) return;
+    var N = ranking.order.length;
+    var r = state.reveal || { active: false, shown: 0 };
+    if (action === "start") state.reveal = { active: true, shown: 0 };
+    else if (action === "next") state.reveal = { active: true, shown: Math.min(N, r.shown + 1) };
+    else if (action === "all") state.reveal = { active: true, shown: N };
+    else if (action === "end") state.reveal = { active: false, shown: 0 };
+    saveState();
+    renderAll();
+    refreshOpenCards();
+    broadcastState();
+  }
+
+  function revealSecret(compId) {
+    if (isGuest) return;
+    state.secretsRevealed[compId] = true;
+    saveState();
+    renderAll();
+    refreshOpenCards();
+    broadcastState();
   }
 
   // ---------- edit card (pre-lock) ----------
@@ -964,6 +1418,9 @@
       '<input id="ecName" placeholder="Wine name" value="' + esc(c.name) + '"' + (locked ? " disabled" : "") + " />" +
       '<input id="ecBy" placeholder="Brought by" value="' + esc(c.by || "") + '"' + (locked ? " disabled" : "") + " />" +
       "</div></div>" +
+      // Secret name stays editable even when locked so the host can assign one
+      // mid-game; it is host-only and never broadcast until revealed.
+      (isGuest ? "" : '<input id="ecSecret" class="ec-secret" placeholder="Secret name — revealed at the end" value="' + esc(c.secret || "") + '" />') +
       '<textarea id="ecDesc" placeholder="Tasting notes..."' + (locked ? " disabled" : "") + ">" + esc(c.desc || "") + "</textarea>" +
       (locked ? "" : '<button id="ecRemove" class="text-danger-btn">Remove this wine</button>');
   }
@@ -972,6 +1429,7 @@
     function findComp() { return state.competitors.find(function (x) { return x.id === compId; }); }
     var nameEl = container.querySelector("#ecName");
     var byEl = container.querySelector("#ecBy");
+    var secretEl = container.querySelector("#ecSecret");
     var descEl = container.querySelector("#ecDesc");
     var photoBtn = container.querySelector("#ecPhotoBtn");
     var imgInput = container.querySelector("#ecImgInput");
@@ -984,6 +1442,9 @@
     if (byEl) byEl.addEventListener("input", function () {
       if (state.locked) return;
       var c = findComp(); if (c) { c.by = this.value; saveState(); renderAll(); }
+    });
+    if (secretEl) secretEl.addEventListener("input", function () {
+      var c = findComp(); if (c) { c.secret = this.value; saveState(); renderRankingPanel(); }
     });
     if (descEl) descEl.addEventListener("input", function () {
       if (state.locked) return;
@@ -1051,6 +1512,66 @@
     modalReturnTo = null;
   }
 
+  // ---------- ephemeral whispers (host → one participant) ----------
+  // A whisper is sent straight down a single connection and shown as a toast
+  // that fades after 5s. It is never written to state, never broadcast, and
+  // never persisted — "lost to the ether".
+
+  var toastTimer = null;
+  function showToast(text) {
+    if (!els.toast || !text) return;
+    els.toast.textContent = text;
+    els.toast.hidden = false;
+    void els.toast.offsetWidth; // reflow so the fade-in runs
+    els.toast.classList.add("show");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      els.toast.classList.remove("show");
+      setTimeout(function () {
+        if (!els.toast.classList.contains("show")) { els.toast.hidden = true; els.toast.textContent = ""; }
+      }, 400);
+    }, 5000);
+  }
+
+  function openWhisperModal(voterId) {
+    modalKind = "whisper";
+    modalCompId = null;
+    modalMatch = null;
+    modalReturnTo = null;
+    els.modalBack.hidden = true;
+    var name = state.voters[voterId] || "Guest";
+    els.modalTitle.textContent = "Whisper to " + name;
+    els.modalBody.innerHTML =
+      '<p class="whisper-hint">A private note that vanishes on their screen after 5 seconds. Nothing is saved.</p>' +
+      '<textarea id="whisperText" class="whisper-input" placeholder="Your message…" maxlength="140"></textarea>' +
+      '<button id="whisperSend" class="primary-btn">Send whisper</button>';
+    els.modal.hidden = false;
+    els.backdrop.hidden = false;
+    var input = els.modalBody.querySelector("#whisperText");
+    var send = els.modalBody.querySelector("#whisperSend");
+    if (input) input.focus();
+    if (send) send.addEventListener("click", function () {
+      var text = input.value.trim();
+      if (text) sendWhisper(voterId, text);
+    });
+    if (input) input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && send) { e.preventDefault(); send.click(); }
+    });
+  }
+
+  function sendWhisper(voterId, text) {
+    var name = state.voters[voterId] || "Guest";
+    var target = null;
+    Object.keys(guestConns).forEach(function (k) {
+      var g = guestConns[k];
+      if (g.voterId === voterId && g.conn && g.conn.open) target = g.conn;
+    });
+    closeModal();
+    if (!target) { showToast(name + " isn't connected right now."); return; }
+    target.send({ type: "whisper", text: text });
+    showToast("Whispered to " + name + " 🤫");
+  }
+
   // ---------- events ----------
 
   function wireEvents() {
@@ -1085,10 +1606,11 @@
         id: state.nextId++,
         name: name,
         by: els.wby.value.trim(),
+        secret: els.wsecret.value.trim(),
         img: pendingImg,
         desc: els.wdesc.value.trim()
       });
-      els.wname.value = ""; els.wby.value = ""; els.wdesc.value = ""; pendingImg = null;
+      els.wname.value = ""; els.wby.value = ""; els.wsecret.value = ""; els.wdesc.value = ""; pendingImg = null;
       els.photoBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8a2 2 0 0 1 2-2h1.5l1-1.5h7l1 1.5H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z"/><circle cx="12" cy="13" r="3.5"/></svg>';
       resetBracketState();
       saveState();
@@ -1111,18 +1633,23 @@
       renderBracket();
     });
 
-    els.anonInfoBtn.addEventListener("click", function (e) {
-      e.stopPropagation();
-      var open = els.anonTooltip.hidden;
-      els.anonTooltip.hidden = !open;
-      els.anonInfoBtn.setAttribute("aria-expanded", String(open));
-    });
-    document.addEventListener("click", function (e) {
-      if (!els.anonTooltip.hidden && !els.anonTooltip.contains(e.target) && e.target !== els.anonInfoBtn) {
-        els.anonTooltip.hidden = true;
-        els.anonInfoBtn.setAttribute("aria-expanded", "false");
-      }
-    });
+    function wireInfoTooltip(btn, tip) {
+      if (!btn || !tip) return;
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var open = tip.hidden;
+        tip.hidden = !open;
+        btn.setAttribute("aria-expanded", String(open));
+      });
+      document.addEventListener("click", function (e) {
+        if (!tip.hidden && !tip.contains(e.target) && e.target !== btn) {
+          tip.hidden = true;
+          btn.setAttribute("aria-expanded", "false");
+        }
+      });
+    }
+    wireInfoTooltip(els.anonInfoBtn, els.anonTooltip);
+    wireInfoTooltip(els.rankInfoBtn, els.rankTooltip);
 
     els.anonToggle.addEventListener("click", function () {
       if (isGuest) return;
@@ -1144,6 +1671,15 @@
       broadcastState();
     });
 
+    els.rankingToggle.addEventListener("click", function () {
+      if (isGuest) return;
+      state.fullRanking = !state.fullRanking;
+      saveState();
+      renderAll();
+      refreshOpenCards();
+      broadcastState();
+    });
+
     els.focusToggle.addEventListener("click", function () {
       showFocusPanel = !showFocusPanel;
       renderFocusPanel();
@@ -1153,8 +1689,7 @@
       if (state.locked) {
         if (!confirm("Unlock configuration? This will reset all votes and end any active voting session.")) return;
         state.locked = false;
-        state.votes = {};
-        state.focusedMatch = null;
+        resetBracketState();
         closeModal();
         stopSession();
       } else {
